@@ -1,2 +1,10 @@
 node_modules/
 dist/
+.vite/
+
+# Personal permission overrides — the shared .claude/settings.json IS committed.
+.claude/settings.local.json
+
+*.local
+.DS_Store
+Thumbs.db
