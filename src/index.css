@@ -1,13 +1,42 @@
 @import 'tailwindcss';
 
+/* Light is the default; .dark on <html> swaps the tokens. Every surface colour in the
+   app reads from these, so there is exactly one place to change a shade. */
+:root {
+  --bg: #ffffff;
+  --card: #f5f5f7;
+  --card-2: #ebebef;
+  --field: #ffffff;
+  --text: #1d1d1f;
+  --muted: #8e8e93;
+  --faint: #b0b0b8;
+  --ghost: #b0b0b8;
+}
+
+.dark {
+  --bg: #000000;
+  --card: #1c1c1e;
+  --card-2: #2c2c2e;
+  --field: #2c2c2e;
+  --text: #f5f5f7;
+  --muted: #98989f;
+  --faint: #6b6b70;
+  --ghost: #5a5a5f;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--bg);
+  color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
@@ -16,4 +45,9 @@ body {
 input {
   font: inherit;
   color: inherit;
+}
+
+/* Native pickers and autofill both repaint fields white in dark mode. */
+input::placeholder {
+  color: var(--faint);
 }

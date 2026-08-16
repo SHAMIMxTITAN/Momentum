@@ -19,23 +19,42 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
 
 ## Files
 
-- `src/App.tsx` — the whole UI. Rows, sections, quick add, inline edit, chips, totals, sync panel.
-- `src/store.ts` — types, localStorage hook, undo stack, `buildRows`/`applyDrag`, `parseItems`, `safeUrl`.
+- `src/App.tsx` — the whole UI. Three tabs (Buy / To-do / Spending), rows, sections, quick add,
+  inline edit, chips, totals, sync panel.
+- `src/store.ts` — types, localStorage hook, undo stack, generic `buildRows`/`applyDrag`,
+  `parseItems`/`parseTodos`, `monthlySpend`, `safeUrl`.
+- `src/theme.ts` — `useTheme`: system / light / dark, toggles `.dark` on `<html>`.
 - `src/github.ts` — GitHub Contents API sync + `useGitHubSync` + the pure `decide()` function.
-- `src/store.test.ts` — tests for reorder, sync decisions, URL sanitizing. Run with `npm test`.
+- `src/store.test.ts` — tests for reorder, migration, spending, sync decisions, URL sanitizing.
 - `public/sw.js`, `public/manifest.webmanifest`, `public/icon.svg`, `public/icon-192.png` — PWA.
 - `README.md` — user-facing setup (token scopes, deploy, install).
 
 ## How it works
 
 - **Order is priority.** There is no `order` field; the array index *is* the order.
-- **Sections.** Items group into Now / Soon / Later. The section headers and the "Nothing here"
+- **Kind + a free tag.** v1's fixed `category` (Repair/Gear/Lego/Clothes/Want) is gone. An item is
+  `kind: 'Need' | 'Both' | 'Want'` plus an optional free-text `tag` the user types. `KINDS` is
+  ordered as a spectrum (essential → discretionary) and the row pill cycles through it in that
+  order; `Both` is the genuinely-needed thing bought in a nicer form than strictly required, and
+  it is deliberately its own column in `monthlySpend` rather than folded into either side.
+  `parseItems` migrates old files: the old category name survives as the tag. Don't reintroduce
+  a fixed list.
+- **Sections.** Items group into Now / Soon / Later / Maybe. The section headers and the "Nothing here"
   ghosts are themselves members of the dnd-kit sortable list — that is what makes dragging
   across a boundary reassign `urgency`. `applyDrag` re-reads each item's urgency from the
   header above it after the move. Don't "simplify" the headers out of the sortable list.
-- **Storage.** `localStorage` keys: `buy-next.v1` (items), `buy-next.sync` (token/repo/path),
-  `buy-next.synced` (last-synced `{sha, json}` — the base for three-way compare).
-- **Sync.** Pull on open + on window focus; debounced push 1.5s after edits settle.
+- **To-dos** are a separate list (Today / Tomorrow / This week) using the same generic
+  `buildRows`/`applyDrag` as the buy list — pass the sections and a `withSection` updater.
+- **Spending** is derived, never stored: `monthlySpend` buckets bought items by the month of
+  `boughtAt`, splits Need/Want, and breaks each month down by tag. Items bought before `boughtAt`
+  existed land in an "undated" bucket rather than being dropped.
+- **Storage.** `localStorage` keys: `buy-next.v1` (items), `buy-next.todos.v1` (tasks),
+  `buy-next.theme`, `buy-next.sync` (token/repo/path), `buy-next.synced` + `buy-next.synced.todos`
+  (last-synced `{sha, json}` — the base for three-way compare).
+- **Sync.** Two files, not one: the list at `cfg.path` and tasks at `todosPath(cfg.path)`
+  (`list.json` → `list.todos.json`). The list file stays a bare JSON array on purpose — folding
+  tasks into it would parse as empty on a machine still running v1 and push that emptiness back.
+  Pull on open + on window focus; debounced push 1.5s after edits settle.
   `decide(localJson, remote, base)` returns `up-to-date | take-remote | push-local | conflict`.
   Both sides changed => `conflict`, and the UI **asks** rather than picking a winner. There is
   deliberately no per-item merge (would need deletion tombstones -> a small CRDT).
@@ -52,40 +71,50 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   replace this with a hardcoded list — the hashes change every build.
 - Tailwind v4: no config file, colors are inline `style` or arbitrary values like `bg-[#F5F5F7]`.
 
-## Visual rules (non-negotiable, from the original brief)
+## Visual rules
 
-White `#FFFFFF` background. Cards `#F5F5F7`, `rounded-2xl`, **no borders, no shadows heavier
-than `shadow-sm`, no gradients, no glassmorphism, no dark mode**. System font stack. Category
-colours as **solid filled pills, white text**: Repair `#FF3B30`, Gear `#007AFF`, Lego `#FF9500`,
-Clothes `#AF52DE`, Want `#34C759`. Urgency headers 26px semibold: Now `#FF3B30`, Soon `#FF9500`,
-Later `#8E8E93`. 16px padding in rows, 12px between rows, ~32px between sections. Springy
-~200ms motion, respect `prefers-reduced-motion`. Lucide icons only for drag handle, check,
-delete. No sidebars, no tabs, no logo header.
+Minimal, flat: **no borders, no shadows heavier than `shadow-sm`, no gradients, no
+glassmorphism**. System font stack. Kind pills are **solid filled, white text**: Need `#007AFF`,
+Both `#30B0C7`, Want `#AF52DE`; the free tag is a quiet neutral pill beside it. Urgency headers 20px semibold:
+Now `#FF3B30`, Soon `#FF9500`, Later `#8E8E93`, Maybe `#5E5CE6`. Springy ~200ms motion, respect
+`prefers-reduced-motion`. No sidebars, no logo header.
+
+**Colours come from CSS variables in `index.css`** (`--bg`, `--card`, `--card-2`, `--field`,
+`--text`, `--muted`, `--faint`, `--ghost`), swapped by `.dark` on `<html>`. Never hardcode a
+surface hex in a component — accent colours (the iOS palette above) are the only literals.
+
+Three rules from the original brief were **deliberately overridden** by the owner on 2026-08-16,
+so don't "restore" them: dark mode now exists (system-following with a manual toggle); tabs now
+exist (Buy / To-do / Spending); Lucide is used for the theme toggle as well as grip/check/delete.
+Spacing was also tightened throughout — headers 26px→20px, rows and section gaps reduced —
+because the original layout read as too empty.
 
 ## State: verified vs not
 
-Verified: 14/14 tests; typecheck and build clean; computed styles and geometry match the rules
-above at 375px and 1280px; totals math; cross-section drag; bought/undo/filter/inline-edit;
-service worker registers and precaches the shell on first load; manifest valid; a bad token
-surfaces "Token rejected".
+Verified: 24/24 tests; typecheck clean. **Live GitHub round-trip now works** — push, pull, and
+first-run-on-a-clean-machine were all exercised against `SHAMIMxTITAN/buy-next-data` on
+2026-08-16. In the browser: add with price/kind/tag, all four urgency sections, tag filter chips,
+mark-bought feeding the Spending view, month grouping and tag breakdown, to-do add and sections,
+dark/light computed colours, and no horizontal overflow at 375px.
 
 **Not verified:**
 
-1. **Live GitHub round-trip.** `pull`/`push`/conflict have never talked to a real repo — only
-   the pure `decide()` logic is unit-tested, plus a 401 rejection. First real Connect is the test.
-2. **No visual review ever happened.** Screenshots were impossible in the previous session
-   (browser pane never composited, so `requestAnimationFrame` never fired). Nobody has looked at
-   this app. Framer Motion animations are entirely unexercised as a result.
-3. **Touch drag on a real phone.** Driven only with synthetic pointer events.
-4. **PWA install.** Needs an https deploy; only localhost was checked.
-5. **Not a git repo yet.** `git init` before deploying.
+1. **Live OS theme switching.** `useTheme` resolves correctly on load, but the preview browser
+   changes `prefers-color-scheme` without dispatching `change` events (a plain listener fired
+   0 times), so the live-update path is untested. Real Chrome does fire it.
+2. **Still no screenshots.** The browser pane doesn't composite, so nothing visual has been seen
+   directly — only computed styles and text. Framer Motion animations remain unexercised.
+3. **Conflict resolution against a real repo.** The conflict bar's UI path has never fired live;
+   only `decide()` is unit-tested. Same for the new to-do file's conflict path.
+4. **Touch drag on a real phone.** Driven only with synthetic pointer events.
+5. **PWA install.** Needs an https deploy; only localhost was checked.
 
 ## Suggested next steps
 
-1. `git init`, commit, push to GitHub.
-2. Deploy `dist/` over https (Cloudflare Pages / Netlify / Vercel work with a private repo free;
+1. Deploy `dist/` over https (Cloudflare Pages / Netlify / Vercel work with a private repo free;
    GitHub Pages needs a public repo on a free plan — keep the *data* repo separate and private).
-3. Connect sync on machine #1, add an item, confirm the commit lands. Then machine #2, confirm
-   it pulls. Then edit both while offline and confirm the conflict bar appears.
-4. Look at it and give visual notes — this has never been seen.
+2. Get the laptop onto the new code before using it — v1 there will not understand `kind`/`tag`
+   and would rewrite the list file with migrated-away data.
+3. Force a conflict on purpose with junk data and confirm the bar appears for both files.
+4. Look at it and give visual notes — this still has never been seen.
 5. Test touch drag on the phone at the LAN URL `npm run dev` prints.
