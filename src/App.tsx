@@ -17,26 +17,30 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import { Check, GripVertical, Monitor, Moon, Sun, X } from 'lucide-react'
+import { Check, ChevronRight, GripVertical, Monitor, Moon, Sun, Star, X } from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
+  WHENS,
   applyItemDrag,
-  applyTodoDrag,
   buildItemRows,
-  buildTodoRows,
   cleanTag,
+  glimpse,
+  groupPayments,
   monthlySpend,
+  reorderVisible,
   rowId,
   safeUrl,
   useItems,
+  usePayments,
   useTodos,
   parseItems,
   type Item,
   type Kind,
-  type Row,
+  type Payment,
   type Todo,
   type Urgency,
+  type When,
 } from './store'
 import { useTheme, type ThemeChoice } from './theme'
 import { useGitHubSync, validRepo, type Status, type SyncConfig } from './github'
@@ -77,9 +81,10 @@ const TABS: Tab[] = ['Buy', 'To-do', 'Spending']
 export default function App() {
   const { items, commit, replaceAll, undo, toast, setToast } = useItems()
   const { todos, setTodos } = useTodos()
+  const { payments, setPayments } = usePayments()
   const theme = useTheme()
   const [tab, setTab] = useState<Tab>('Buy')
-  const sync = useGitHubSync(items, replaceAll, todos, setTodos)
+  const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -132,7 +137,9 @@ export default function App() {
             <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
           )}
           {tab === 'To-do' && <TodoView todos={todos} setTodos={setTodos} />}
-          {tab === 'Spending' && <SpendView items={items} />}
+          {tab === 'Spending' && (
+            <SpendView items={items} payments={payments} setPayments={setPayments} />
+          )}
         </div>
 
         <AnimatePresence>
@@ -191,6 +198,13 @@ function ConflictBars({ sync }: { sync: Sync }) {
           what="to-do list"
           count={sync.todos.conflict.items.length}
           resolve={sync.todos.resolve}
+        />
+      )}
+      {sync.payments.conflict && (
+        <ConflictBar
+          what="payments list"
+          count={sync.payments.conflict.items.length}
+          resolve={sync.payments.resolve}
         />
       )}
     </>
@@ -788,14 +802,20 @@ function EditFields({
     if (e.key === 'Escape') done()
   }
 
+  // focusout bubbles, so moving between these fields fires it too. Only commit once focus
+  // has left the whole group — saving on the title's own blur unmounted the other fields
+  // mid-click, so tapping Price or Note just snapped the row shut.
+  const onBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) save()
+  }
+
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" onBlur={onBlur}>
       <input
         autoFocus
         value={d.title}
         onChange={(e) => setD({ ...d, title: e.target.value })}
         onKeyDown={onKey}
-        onBlur={save}
         className={`${FIELD} text-[17px]`}
       />
       <div className="flex flex-wrap gap-2">
@@ -829,7 +849,7 @@ function EditFields({
           placeholder="Link"
           className={`${FIELD} min-w-0 flex-1`}
         />
-        {/* pointerDown, not click: the title's onBlur would unmount this first */}
+        {/* pointerDown, not click: blur-to-save can unmount this before a click lands */}
         <button
           onPointerDown={onDelete}
           aria-label={`Delete ${item.title}`}
@@ -883,6 +903,7 @@ function BoughtRow({
 
 function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) => void }) {
   const [title, setTitle] = useState('')
+  const [day, setDay] = useState<When>('Today')
   const [editing, setEditing] = useState<string | null>(null)
   const [showDone, setShowDone] = useState(false)
 
@@ -891,161 +912,196 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
-  const openTodos = todos.filter((t) => !t.done)
+  const openOn = (w: When) => todos.filter((t) => !t.done && t.when === w)
+  const shown = openOn(day)
   const done = todos.filter((t) => t.done)
-  const rows = buildTodoRows(openTodos)
+
+  // Peek at the next bucket along, so tomorrow can warn you without taking the screen.
+  const nextDay = WHENS[(WHENS.indexOf(day) + 1) % WHENS.length]
+  const peek = glimpse(todos, nextDay)
 
   const add = () => {
     if (!title.trim()) return
-    setTodos([
-      ...todos,
-      { id: crypto.randomUUID(), title: title.trim(), when: 'Today', done: false },
-    ])
+    setTodos([...todos, { id: crypto.randomUUID(), title: title.trim(), when: day, done: false }])
     setTitle('')
   }
 
+  const patch = (id: string, next: Partial<Todo>) =>
+    setTodos(todos.map((x) => (x.id === id ? { ...x, ...next } : x)))
+
   const toggle = (t: Todo) =>
-    setTodos(
-      todos.map((x) =>
-        x.id === t.id
-          ? { ...x, done: !x.done, doneAt: x.done ? undefined : new Date().toISOString() }
-          : x,
-      ),
-    )
+    patch(t.id, { done: !t.done, doneAt: t.done ? undefined : new Date().toISOString() })
+
+  const moveOn = (t: Todo) =>
+    patch(t.id, { when: WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length] })
 
   const remove = (t: Todo) => setTodos(todos.filter((x) => x.id !== t.id))
 
-  const rename = (id: string, next: string) =>
-    setTodos(todos.map((x) => (x.id === id ? { ...x, title: next } : x)))
-
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over) return
-    const ids = rows.map(rowId)
+    const ids = shown.map((t) => t.id)
     const from = ids.indexOf(String(active.id))
     const to = ids.indexOf(String(over.id))
     if (from < 0 || to < 0 || from === to) return
-    setTodos(applyTodoDrag(todos, rows, from, to))
+    setTodos(reorderVisible(todos, shown, from, to))
   }
 
   return (
     <>
-      <div className="flex items-center gap-2 rounded-2xl bg-[var(--card)] px-4">
+      <div className="flex gap-2 pt-1">
+        {WHENS.map((w) => {
+          const count = openOn(w).length
+          const on = w === day
+          return (
+            <button
+              key={w}
+              onClick={() => setDay(w)}
+              className="min-w-0 flex-1 rounded-2xl px-3 py-3.5 text-left transition-colors"
+              style={
+                on
+                  ? { background: WHEN_COLOR[w], color: '#fff' }
+                  : { background: 'var(--card)', color: 'var(--muted)' }
+              }
+            >
+              <span className="block truncate text-[17px] font-semibold tracking-tight">{w}</span>
+              <span
+                className="block pt-0.5 text-[13px] tabular-nums"
+                style={on ? { color: 'rgba(255,255,255,0.85)' } : undefined}
+              >
+                {count === 0 ? 'clear' : `${count} open`}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2 rounded-2xl bg-[var(--card)] px-4">
         <span className="text-[20px] leading-none text-[var(--faint)]">+</span>
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && add()}
-          placeholder="Add a task"
+          placeholder={`Add to ${day.toLowerCase()}`}
           className="w-full bg-transparent py-3.5 text-[17px] tracking-tight outline-none"
         />
       </div>
 
-      {todos.length === 0 ? (
+      {shown.length === 0 ? (
         <p className="px-1 pt-6 text-[17px] text-[var(--muted)]">
-          Nothing to do yet. Add the first task.
+          {day === 'Today' ? 'Nothing for today. Enjoy it.' : `Nothing for ${day.toLowerCase()}.`}
         </p>
       ) : (
-        <>
-          <div className="px-1 pt-3 text-[13px] tracking-tight text-[var(--muted)]">
-            {openTodos.length} open · {done.length} done
-          </div>
-
+        // keyed by day so switching days swaps the list outright. Without it every row of the
+        // old day plays its exit animation at once, which reads as noise for what is really
+        // just a view change — removals within a day still animate normally.
+        <div className="pt-4" key={day}>
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
             modifiers={[restrictToVerticalAxis]}
             onDragEnd={onDragEnd}
           >
-            <SortableContext items={rows.map(rowId)} strategy={verticalListSortingStrategy}>
+            <SortableContext items={shown.map((t) => t.id)} strategy={verticalListSortingStrategy}>
               <AnimatePresence initial={false}>
-                {rows.map((r) =>
-                  r.kind === 'header' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
-                      <h2
-                        className="px-1 pt-5 pb-2 text-[20px] font-semibold tracking-tight"
-                        style={{ color: WHEN_COLOR[r.section] }}
-                      >
-                        {r.section}
-                      </h2>
-                    </Slot>
-                  ) : r.kind === 'ghost' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable>
-                      <p className="rounded-2xl bg-[var(--card)] px-4 py-3 text-[14px] text-[var(--ghost)]">
-                        Nothing here
-                      </p>
-                    </Slot>
-                  ) : (
-                    <TodoRow
-                      key={r.item.id}
-                      todo={r.item}
-                      editing={editing === r.item.id}
-                      setEditing={setEditing}
-                      rename={rename}
-                      onToggle={() => toggle(r.item)}
-                      onDelete={() => remove(r.item)}
-                    />
-                  ),
-                )}
+                {shown.map((t) => (
+                  <TodoRow
+                    key={t.id}
+                    todo={t}
+                    editing={editing === t.id}
+                    setEditing={setEditing}
+                    rename={(id, next) => patch(id, { title: next })}
+                    onToggle={() => toggle(t)}
+                    onStar={() => patch(t.id, { important: t.important ? undefined : true })}
+                    onMove={() => moveOn(t)}
+                    nextDay={WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length]}
+                    onDelete={() => remove(t)}
+                  />
+                ))}
               </AnimatePresence>
             </SortableContext>
           </DndContext>
+        </div>
+      )}
 
-          {done.length > 0 && (
-            <div className="pt-8">
-              <button
-                onClick={() => setShowDone((s) => !s)}
-                className="px-1 text-[15px] font-semibold tracking-tight text-[var(--muted)]"
-              >
-                Done · {done.length}
-                <span
-                  className="ml-1.5 inline-block transition-transform"
-                  style={{ transform: showDone ? 'rotate(90deg)' : 'none' }}
+      {peek.top && (
+        <button
+          onClick={() => setDay(nextDay)}
+          className="mt-6 w-full rounded-2xl bg-[var(--card)] px-4 py-3.5 text-left"
+        >
+          <span
+            className="block text-[13px] font-semibold tracking-tight"
+            style={{ color: WHEN_COLOR[nextDay] }}
+          >
+            {nextDay}
+          </span>
+          <span className="flex items-center gap-1.5 pt-1 text-[15px] tracking-tight">
+            {peek.top.important && <Star size={13} fill="#FF9500" color="#FF9500" />}
+            <span className="min-w-0 truncate">{peek.top.title}</span>
+          </span>
+          {peek.more > 0 && (
+            <span className="block pt-1 text-[13px] text-[var(--muted)]">
+              + {peek.more} more …
+            </span>
+          )}
+        </button>
+      )}
+
+      {done.length > 0 && (
+        <div className="pt-8">
+          <button
+            onClick={() => setShowDone((s) => !s)}
+            className="px-1 text-[15px] font-semibold tracking-tight text-[var(--muted)]"
+          >
+            Done · {done.length}
+            <span
+              className="ml-1.5 inline-block transition-transform"
+              style={{ transform: showDone ? 'rotate(90deg)' : 'none' }}
+            >
+              ›
+            </span>
+          </button>
+          {showDone && (
+            <div className="space-y-2.5 pt-3">
+              {done.map((t) => (
+                <div
+                  key={t.id}
+                  className="flex items-center gap-3 rounded-2xl bg-[var(--card)] px-4 py-3"
                 >
-                  ›
-                </span>
-              </button>
-              {showDone && (
-                <div className="space-y-2.5 pt-3">
-                  {done.map((t) => (
-                    <div
-                      key={t.id}
-                      className="flex items-center gap-3 rounded-2xl bg-[var(--card)] px-4 py-3"
-                    >
-                      <button
-                        onClick={() => toggle(t)}
-                        aria-label={`Mark ${t.title} not done`}
-                        className="grid size-6 shrink-0 place-items-center rounded-full bg-[#34C759] text-white"
-                      >
-                        <Check size={14} strokeWidth={3} />
-                      </button>
-                      <span className="min-w-0 flex-1 truncate text-[16px] text-[var(--muted)] line-through">
-                        {t.title}
-                      </span>
-                      <button
-                        onClick={() => remove(t)}
-                        aria-label={`Delete ${t.title}`}
-                        className="shrink-0 p-1 text-[var(--faint)] hover:text-[#FF3B30]"
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  ))}
+                  <button
+                    onClick={() => toggle(t)}
+                    aria-label={`Mark ${t.title} not done`}
+                    className="grid size-6 shrink-0 place-items-center rounded-full bg-[#34C759] text-white"
+                  >
+                    <Check size={14} strokeWidth={3} />
+                  </button>
+                  <span className="min-w-0 flex-1 truncate text-[16px] text-[var(--muted)] line-through">
+                    {t.title}
+                  </span>
+                  <button
+                    onClick={() => remove(t)}
+                    aria-label={`Delete ${t.title}`}
+                    className="shrink-0 p-1 text-[var(--faint)] hover:text-[#FF3B30]"
+                  >
+                    <X size={16} />
+                  </button>
                 </div>
-              )}
+              ))}
             </div>
           )}
-        </>
+        </div>
       )}
     </>
   )
 }
-
 function TodoRow({
   todo,
   editing,
   setEditing,
   rename,
   onToggle,
+  onStar,
+  onMove,
+  nextDay,
   onDelete,
 }: {
   todo: Todo
@@ -1053,6 +1109,9 @@ function TodoRow({
   setEditing: (id: string | null) => void
   rename: (id: string, next: string) => void
   onToggle: () => void
+  onStar: () => void
+  onMove: () => void
+  nextDay: When
   onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
@@ -1126,6 +1185,25 @@ function TodoRow({
         )}
 
         <button
+          onClick={onStar}
+          aria-label={todo.important ? `Unstar ${todo.title}` : `Mark ${todo.title} important`}
+          title="Important"
+          className="shrink-0 p-1 transition-colors"
+          style={{ color: todo.important ? '#FF9500' : 'var(--faint)' }}
+        >
+          <Star size={16} fill={todo.important ? '#FF9500' : 'none'} />
+        </button>
+
+        <button
+          onClick={onMove}
+          aria-label={`Move ${todo.title} to ${nextDay}`}
+          title={`Move to ${nextDay}`}
+          className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[var(--text)]"
+        >
+          <ChevronRight size={16} />
+        </button>
+
+        <button
           onPointerDown={onDelete}
           aria-label={`Delete ${todo.title}`}
           className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
@@ -1139,12 +1217,169 @@ function TodoRow({
 
 /* ----------------------------------------------------------- Spending view */
 
-function SpendView({ items }: { items: Item[] }) {
+function SpendView({
+  items,
+  payments,
+  setPayments,
+}: {
+  items: Item[]
+  payments: Payment[]
+  setPayments: (p: Payment[]) => void
+}) {
   const months = useMemo(() => monthlySpend(items), [items])
 
+  return (
+    <>
+      <MustPayments payments={payments} setPayments={setPayments} />
+      <MonthHistory months={months} />
+    </>
+  )
+}
+
+/**
+ * Deliberately unlike the rest of the app: one dark slab stating the monthly floor, then a
+ * plain ledger. These are commitments, not choices, so they get no cards, pills or drag.
+ */
+function MustPayments({
+  payments,
+  setPayments,
+}: {
+  payments: Payment[]
+  setPayments: (p: Payment[]) => void
+}) {
+  const [name, setName] = useState('')
+  const [amount, setAmount] = useState('')
+  const [group, setGroup] = useState('')
+  const [open, setOpen] = useState(false)
+
+  const { groups, monthly, activeCount } = useMemo(() => groupPayments(payments), [payments])
+  const knownGroups = useMemo(
+    () => [...new Set(payments.flatMap((p) => (p.group ? [p.group] : [])))].sort(),
+    [payments],
+  )
+
+  const add = () => {
+    const value = parseFloat(amount)
+    if (!name.trim() || !isFinite(value)) return
+    setPayments([
+      ...payments,
+      { id: crypto.randomUUID(), name: name.trim(), amount: value, group: cleanTag(group) },
+    ])
+    setName('')
+    setAmount('')
+  }
+
+  const patch = (id: string, next: Partial<Payment>) =>
+    setPayments(payments.map((p) => (p.id === id ? { ...p, ...next } : p)))
+
+  const remove = (id: string) => setPayments(payments.filter((p) => p.id !== id))
+
+  return (
+    <div className="pt-1">
+      <div className="rounded-2xl bg-[#1D1D1F] px-5 py-5 dark:bg-[#161618]">
+        <p className="text-[13px] font-semibold tracking-[0.08em] text-[#8E8E93] uppercase">
+          Must pay every month
+        </p>
+        <p className="pt-1.5 text-[34px] leading-none font-semibold tracking-tight text-white tabular-nums">
+          {money(monthly)}
+        </p>
+        <p className="pt-2 text-[13px] text-[#8E8E93]">
+          {activeCount === 0
+            ? 'Nothing committed yet'
+            : `${activeCount} commitment${activeCount === 1 ? '' : 's'} before anything else`}
+        </p>
+      </div>
+
+      {groups.map((g) => (
+        <div key={g.group} className="pt-5">
+          <div className="flex items-baseline justify-between px-1 pb-1.5">
+            <h3 className="text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
+              {g.group}
+            </h3>
+            <span className="text-[13px] text-[var(--muted)] tabular-nums">{money(g.total)}</span>
+          </div>
+          {g.rows.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center gap-3 px-1 py-2.5"
+              style={{ opacity: p.paused ? 0.45 : 1 }}
+            >
+              <button
+                onClick={() => patch(p.id, { paused: p.paused ? undefined : true })}
+                aria-label={p.paused ? `Resume ${p.name}` : `Pause ${p.name}`}
+                title={p.paused ? 'Resume' : 'Pause'}
+                className="min-w-0 flex-1 text-left text-[16px] tracking-tight"
+                style={{ textDecoration: p.paused ? 'line-through' : 'none' }}
+              >
+                {p.name}
+              </button>
+              <span className="shrink-0 text-[16px] tabular-nums">{money(p.amount)}</span>
+              <button
+                onClick={() => remove(p.id)}
+                aria-label={`Delete ${p.name}`}
+                className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {open ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl bg-[var(--card)] p-3">
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+            placeholder="Netflix, Claude, rent…"
+            className={`${FIELD} min-w-0 flex-1`}
+          />
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+            inputMode="decimal"
+            placeholder="Amount"
+            className={`${FIELD} w-24 shrink-0`}
+          />
+          <input
+            value={group}
+            onChange={(e) => setGroup(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+            list="known-groups"
+            placeholder="Work / Entertainment"
+            className={`${FIELD} w-40 shrink-0`}
+          />
+          <datalist id="known-groups">
+            {knownGroups.map((g) => (
+              <option key={g} value={g} />
+            ))}
+          </datalist>
+          <button
+            onClick={add}
+            className="shrink-0 rounded-full bg-[#007AFF] px-4 py-1.5 text-[13px] font-semibold text-white"
+          >
+            Add
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className="mt-4 text-[13px] font-semibold text-[var(--muted)] transition-colors hover:text-[#007AFF]"
+        >
+          + Add a monthly payment
+        </button>
+      )}
+    </div>
+  )
+}
+
+function MonthHistory({ months }: { months: ReturnType<typeof monthlySpend> }) {
   if (months.length === 0)
     return (
-      <p className="px-1 pt-6 text-[17px] text-[var(--muted)]">
+      <p className="px-1 pt-8 text-[15px] text-[var(--muted)]">
         Nothing bought yet. Tick something off the buy list and it shows up here.
       </p>
     )

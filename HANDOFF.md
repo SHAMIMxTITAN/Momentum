@@ -43,16 +43,29 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   ghosts are themselves members of the dnd-kit sortable list — that is what makes dragging
   across a boundary reassign `urgency`. `applyDrag` re-reads each item's urgency from the
   header above it after the move. Don't "simplify" the headers out of the sortable list.
-- **To-dos** are a separate list (Today / Tomorrow / This week) using the same generic
-  `buildRows`/`applyDrag` as the buy list — pass the sections and a `withSection` updater.
+- **To-dos** show one day at a time (Today / Tomorrow / This week) behind a big switcher, rather
+  than all three stacked. Today gets the whole screen; a one-line peek underneath looks at the
+  next bucket so tomorrow can warn you without taking space. `importance()` decides what appears
+  in that peek — a hand-starred task always wins, then wording (`SIGNALS`), then shouting. It
+  never reorders anything; list position stays the user's call. Drags reorder within the shown
+  day via `reorderVisible`, and the chevron on a row moves it to the next day.
+- **Must payments** are recurring monthly commitments (subscriptions, rent), a separate list from
+  items — they are never "bought", they just come round again. They head the Spending tab and are
+  styled deliberately unlike everything else: a dark slab stating the monthly floor, then a plain
+  ledger with no cards, pills or drag, because these are commitments rather than choices.
+  `groupPayments` totals them and buckets by a free-text `group`; a paused row stays listed but is
+  excluded from every total, and an ungrouped one falls into "Other".
 - **Spending** is derived, never stored: `monthlySpend` buckets bought items by the month of
   `boughtAt`, splits Need/Want, and breaks each month down by tag. Items bought before `boughtAt`
   existed land in an "undated" bucket rather than being dropped.
 - **Storage.** `localStorage` keys: `buy-next.v1` (items), `buy-next.todos.v1` (tasks),
-  `buy-next.theme`, `buy-next.sync` (token/repo/path), `buy-next.synced` + `buy-next.synced.todos`
-  (last-synced `{sha, json}` — the base for three-way compare).
-- **Sync.** Two files, not one: the list at `cfg.path` and tasks at `todosPath(cfg.path)`
-  (`list.json` → `list.todos.json`). The list file stays a bare JSON array on purpose — folding
+  `buy-next.payments.v1` (monthly commitments), `buy-next.theme`, `buy-next.sync`
+  (token/repo/path), and one base per synced file: `buy-next.synced`, `buy-next.synced.todos`,
+  `buy-next.synced.payments` (last-synced `{sha, json}` — the base for three-way compare).
+- **Sync.** Three files, not one: the list at `cfg.path`, tasks at `todosPath(cfg.path)`, and
+  monthly payments at `paymentsPath(cfg.path)` (`list.json` → `list.todos.json`,
+  `list.payments.json`). `useFileSync` is generic over a single file — adding another list means
+  adding one `FileSync` entry. The list file stays a bare JSON array on purpose — folding
   tasks into it would parse as empty on a machine still running v1 and push that emptiness back.
   Pull on open + on window focus; debounced push 1.5s after edits settle.
   `decide(localJson, remote, base)` returns `up-to-date | take-remote | push-local | conflict`.
@@ -102,8 +115,11 @@ dark/light computed colours, and no horizontal overflow at 375px.
 1. **Live OS theme switching.** `useTheme` resolves correctly on load, but the preview browser
    changes `prefers-color-scheme` without dispatching `change` events (a plain listener fired
    0 times), so the live-update path is untested. Real Chrome does fire it.
-2. **Still no screenshots.** The browser pane doesn't composite, so nothing visual has been seen
-   directly — only computed styles and text. Framer Motion animations remain unexercised.
+2. **Still no screenshots, and animations still cannot be tested.** `requestAnimationFrame` fires
+   **zero** times in the preview pane (measured, 2026-08-16), so Framer Motion never advances:
+   exit animations never complete and `AnimatePresence` holds removed rows mounted forever. A row
+   that appears stuck after being ticked off or moved is that artifact, not a bug — real Chrome
+   fires rAF. Don't "fix" it based on what the preview shows; check in a real browser first.
 3. **Conflict resolution against a real repo.** The conflict bar's UI path has never fired live;
    only `decide()` is unit-tested. Same for the new to-do file's conflict path.
 4. **Touch drag on a real phone.** Driven only with synthetic pointer events.

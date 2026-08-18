@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { parseItems, parseTodos, type Item, type Todo } from './store.ts'
+import { parseItems, parsePayments, parseTodos, type Item, type Payment, type Todo } from './store.ts'
 
 export type SyncConfig = { token: string; repo: string; path: string }
 
 const CFG_KEY = 'buy-next.sync'
 const BASE_KEY = 'buy-next.synced'
 const TODO_BASE_KEY = 'buy-next.synced.todos'
+const PAY_BASE_KEY = 'buy-next.synced.payments'
 const API = 'https://api.github.com'
 
 export const serialize = (rows: unknown[]) => JSON.stringify(rows, null, 2)
@@ -15,7 +16,11 @@ export const serialize = (rows: unknown[]) => JSON.stringify(rows, null, 2)
  * file a plain array means a machine still running the old code can read it — a
  * combined object would parse as empty there and push the emptiness back.
  */
-export const todosPath = (path: string) => `${path.replace(/\.json$/i, '')}.todos.json`
+const stem = (path: string) => path.replace(/\.json$/i, '')
+
+export const todosPath = (path: string) => `${stem(path)}.todos.json`
+
+export const paymentsPath = (path: string) => `${stem(path)}.payments.json`
 
 const b64encode = (s: string) => {
   const bytes = new TextEncoder().encode(s)
@@ -274,6 +279,13 @@ const TODO_FILE: FileSync<Todo> = {
   label: 'task',
 }
 
+const PAYMENT_FILE: FileSync<Payment> = {
+  path: (cfg) => paymentsPath(cfg.path),
+  baseKey: PAY_BASE_KEY,
+  parse: parsePayments,
+  label: 'payment',
+}
+
 /** Whichever half is in trouble is the one worth showing. */
 const worst = (a: Status, b: Status): Status => {
   const rank = (s: Status) =>
@@ -286,11 +298,14 @@ export function useGitHubSync(
   replaceItems: (items: Item[]) => void,
   todos: Todo[],
   replaceTodos: (todos: Todo[]) => void,
+  payments: Payment[],
+  replacePayments: (payments: Payment[]) => void,
 ) {
   const [cfg, setCfgState] = useState<SyncConfig | null>(loadCfg)
 
   const itemSync = useFileSync(cfg, items, replaceItems, ITEM_FILE)
   const todoSync = useFileSync(cfg, todos, replaceTodos, TODO_FILE)
+  const paymentSync = useFileSync(cfg, payments, replacePayments, PAYMENT_FILE)
 
   const setCfg = (next: SyncConfig | null) => {
     if (next) localStorage.setItem(CFG_KEY, JSON.stringify(next))
@@ -298,20 +313,23 @@ export function useGitHubSync(
     // different repo/file => old bases are meaningless
     localStorage.removeItem(BASE_KEY)
     localStorage.removeItem(TODO_BASE_KEY)
+    localStorage.removeItem(PAY_BASE_KEY)
     setCfgState(next)
   }
 
   const sync = () => {
     itemSync.sync()
     todoSync.sync()
+    paymentSync.sync()
   }
 
   return {
     cfg,
     setCfg,
     sync,
-    status: worst(itemSync.status, todoSync.status),
+    status: worst(worst(itemSync.status, todoSync.status), paymentSync.status),
     items: itemSync,
     todos: todoSync,
+    payments: paymentSync,
   }
 }

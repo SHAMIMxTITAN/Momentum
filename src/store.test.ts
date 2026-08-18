@@ -3,22 +3,33 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   applyItemDrag,
-  applyTodoDrag,
+  glimpse,
+  groupPayments,
   buildItemRows,
-  buildTodoRows,
+  importance,
   cleanTag,
   monthlySpend,
+  reorderVisible,
   parseItems,
+  parsePayments,
   parseTodos,
   rowId,
   safeUrl,
   type Item,
   type Kind,
+  type Payment,
   type Todo,
   type Urgency,
   type When,
 } from './store.ts'
-import { decide, todosPath, upToDateBase, validRepo, type Remote } from './github.ts'
+import {
+  decide,
+  paymentsPath,
+  todosPath,
+  upToDateBase,
+  validRepo,
+  type Remote,
+} from './github.ts'
 
 const mk = (id: string, urgency: Urgency, kind: Kind = 'Need', tag?: string): Item => ({
   id,
@@ -76,16 +87,64 @@ test('items hidden by a filter keep their place', () => {
 
 /* ----------------------------------------------------------------- to-dos */
 
-const td = (id: string, when: When): Todo => ({ id, title: id, when, done: false })
-const todoShape = (todos: Todo[]) => todos.map((t) => `${t.when}:${t.id}`)
-const todoAt = (todos: Todo[], id: string) =>
-  buildTodoRows(todos).findIndex((r) => rowId(r) === id)
+const td = (id: string, when: When, title = id): Todo => ({ id, title, when, done: false })
 
-test('dragging a task across a day boundary rewrites when', () => {
-  const todos = [td('a', 'Today'), td('b', 'This week')]
-  const rows = buildTodoRows(todos)
-  const out = applyTodoDrag(todos, rows, todoAt(todos, 'b'), todoAt(todos, 'a'))
-  assert.deepEqual(todoShape(out), ['Today:b', 'Today:a'])
+test('reordering one day leaves the other days untouched', () => {
+  const todos = [td('a', 'Today'), td('week1', 'This week'), td('b', 'Today'), td('c', 'Today')]
+  const shown = todos.filter((t) => t.when === 'Today') // [a, b, c]
+  const out = reorderVisible(todos, shown, 2, 0) // c to the front of Today
+  assert.deepEqual(
+    out.map((t) => t.id),
+    ['c', 'week1', 'a', 'b'],
+  )
+  // the untouched day must keep both its position and its day
+  assert.equal(out[1].id, 'week1')
+  assert.equal(out[1].when, 'This week')
+})
+
+test('importance: a starred task beats anything the wording implies', () => {
+  const starred: Todo = { ...td('s', 'Today', 'water the plants'), important: true }
+  const shouty = td('u', 'Today', 'URGENT pay the rent deadline!!!')
+  assert.ok(importance(starred) > importance(shouty))
+})
+
+test('importance: wording separates a real errand from a vague one', () => {
+  assert.ok(importance(td('a', 'Today', 'pay electricity bill')) > importance(td('b', 'Today', 'maybe tidy up')))
+  assert.ok(importance(td('c', 'Today', 'doctor appointment')) > importance(td('d', 'Today', 'watch a film')))
+  assert.equal(importance(td('e', 'Today', 'water the plants')), 0)
+})
+
+test('glimpse surfaces the most important task of a day and counts the rest', () => {
+  const todos = [
+    td('a', 'Tomorrow', 'tidy the desk'),
+    td('b', 'Tomorrow', 'pay the rent'),
+    td('c', 'Tomorrow', 'read a bit'),
+    td('d', 'Today', 'URGENT thing today'), // different day -> ignored
+    { ...td('e', 'Tomorrow', 'done already'), done: true }, // finished -> ignored
+  ]
+  const { top, more } = glimpse(todos, 'Tomorrow')
+  assert.equal(top?.id, 'b')
+  assert.equal(more, 2)
+})
+
+test('glimpse on an empty day shows nothing rather than guessing', () => {
+  assert.deepEqual(glimpse([td('a', 'Today')], 'Tomorrow'), { top: null, more: 0 })
+})
+
+test('glimpse falls back to list order when nothing stands out', () => {
+  const todos = [td('first', 'Today', 'thing one'), td('second', 'Today', 'thing two')]
+  assert.equal(glimpse(todos, 'Today').top?.id, 'first')
+})
+
+test('parseTodos keeps the important flag and ignores junk values', () => {
+  const out = parseTodos([
+    { title: 'starred', important: true },
+    { title: 'plain' },
+    { title: 'junk flag', important: 'yes' },
+  ])
+  assert.equal(out[0].important, true)
+  assert.equal(out[1].important, undefined)
+  assert.equal(out[2].important, undefined)
 })
 
 test('parseTodos drops junk and fills defaults', () => {
@@ -160,6 +219,64 @@ test('monthlySpend keeps undated purchases in their own bucket at the end', () =
   assert.equal(out[1].total, 40)
 })
 
+/* --------------------------------------------------------- must payments */
+
+const pay = (name: string, amount: number, group?: string, paused?: boolean): Payment => ({
+  id: name,
+  name,
+  amount,
+  group,
+  paused,
+})
+
+test('groupPayments totals the monthly floor and buckets by group', () => {
+  const { groups, monthly, activeCount } = groupPayments([
+    pay('Claude', 1700, 'Work'),
+    pay('Claude second account', 1700, 'Work'),
+    pay('Netflix', 649, 'Entertainment'),
+  ])
+  assert.equal(monthly, 4049)
+  assert.equal(activeCount, 3)
+  assert.deepEqual(
+    groups.map((g) => g.group),
+    ['Work', 'Entertainment'], // biggest group first
+  )
+  assert.equal(groups[0].total, 3400)
+  assert.equal(groups[1].total, 649)
+})
+
+test('a paused payment stays listed but is excluded from every total', () => {
+  const { groups, monthly, activeCount } = groupPayments([
+    pay('Netflix', 649, 'Entertainment'),
+    pay('Prime', 299, 'Entertainment', true),
+  ])
+  assert.equal(monthly, 649)
+  assert.equal(activeCount, 1)
+  assert.equal(groups[0].rows.length, 2) // still visible
+  assert.equal(groups[0].total, 649) // but not counted
+})
+
+test('payments with no group fall into Other rather than vanishing', () => {
+  const { groups, monthly } = groupPayments([pay('Rent', 15000)])
+  assert.equal(groups[0].group, 'Other')
+  assert.equal(monthly, 15000)
+})
+
+test('parsePayments drops junk, defaults a bad amount to zero, never goes negative', () => {
+  const out = parsePayments([
+    { name: 'Netflix', amount: 649, group: 'Entertainment' },
+    { name: '   ', amount: 100 },
+    null,
+    { name: 'weird', amount: 'free' },
+    { name: 'refund', amount: -50 },
+  ])
+  assert.equal(out.length, 3)
+  assert.equal(out[0].group, 'Entertainment')
+  assert.equal(out[1].amount, 0)
+  assert.equal(out[2].amount, 0)
+  assert.ok(out[0].id)
+})
+
 /* ------------------------------------------------------------------- sync */
 
 const remote = (json: string, sha: string): Remote<Item> => ({ items: [], json, sha })
@@ -210,11 +327,15 @@ test('up-to-date always records a base, even when the repo file does not exist',
   assert.equal(withRemote!.json, '[1]')
 })
 
-test('todosPath sits beside the list file without colliding', () => {
+test('sibling files sit beside the list file without colliding', () => {
   assert.equal(todosPath('list.json'), 'list.todos.json')
   assert.equal(todosPath('buy-next.json'), 'buy-next.todos.json')
   assert.equal(todosPath('data/list'), 'data/list.todos.json')
-  assert.notEqual(todosPath('list.json'), 'list.json')
+  assert.equal(paymentsPath('list.json'), 'list.payments.json')
+  assert.equal(paymentsPath('data/list'), 'data/list.payments.json')
+  // all three must be distinct or one list would overwrite another
+  const paths = ['list.json', todosPath('list.json'), paymentsPath('list.json')]
+  assert.equal(new Set(paths).size, 3)
 })
 
 /* ------------------------------------------------------------- input trust */

@@ -31,12 +31,30 @@ export type Todo = {
   when: When
   done: boolean
   doneAt?: string
+  /** Starred by hand. Always outranks anything the text heuristic infers. */
+  important?: boolean
+}
+
+/**
+ * A recurring monthly commitment — subscriptions, rent, an EMI. Unlike an Item these are
+ * never "bought": they come round again every month, so they are a floor under the budget
+ * rather than anything that appears in the buy list.
+ */
+export type Payment = {
+  id: string
+  name: string
+  amount: number
+  /** Free text, same idea as an item's tag: "Work", "Entertainment". */
+  group?: string
+  /** Kept but not counted — for something cancelled or on hold. */
+  paused?: boolean
 }
 
 // `order` is the array index — the list is the order. Export/import carries it implicitly.
 
 const ITEMS_KEY = 'buy-next.v1'
 const TODOS_KEY = 'buy-next.todos.v1'
+const PAYMENTS_KEY = 'buy-next.payments.v1'
 
 /**
  * Links get rendered into an href, so anything but http(s) is a script-injection
@@ -119,9 +137,66 @@ export function parseTodos(raw: unknown): Todo[] {
           : 'Today',
         done: o.done === true,
         doneAt: typeof o.doneAt === 'string' ? o.doneAt : undefined,
+        important: o.important === true ? true : undefined,
       },
     ]
   })
+}
+
+export function parsePayments(raw: unknown): Payment[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((r): Payment[] => {
+    if (!r || typeof r !== 'object') return []
+    const o = r as Record<string, unknown>
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!name) return []
+    const amount = typeof o.amount === 'number' && isFinite(o.amount) ? o.amount : 0
+    return [
+      {
+        id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
+        name,
+        amount: amount < 0 ? 0 : amount,
+        group: cleanTag(o.group),
+        paused: o.paused === true ? true : undefined,
+      },
+    ]
+  })
+}
+
+export const UNGROUPED = 'Other'
+
+export type PaymentGroup = { group: string; total: number; rows: Payment[] }
+
+/**
+ * Group the commitments and total what actually leaves the account each month.
+ * Paused rows stay visible but are excluded from every total — the point of the
+ * figure is what you are really committed to, not what you once signed up for.
+ */
+export function groupPayments(payments: Payment[]): {
+  groups: PaymentGroup[]
+  monthly: number
+  activeCount: number
+} {
+  const byGroup = new Map<string, Payment[]>()
+  for (const p of payments) {
+    const key = p.group ?? UNGROUPED
+    byGroup.set(key, [...(byGroup.get(key) ?? []), p])
+  }
+
+  const groups = [...byGroup.entries()]
+    .map(([group, rows]): PaymentGroup => ({
+      group,
+      rows,
+      total: rows.reduce((s, p) => s + (p.paused ? 0 : p.amount), 0),
+    }))
+    .sort((a, b) => b.total - a.total || a.group.localeCompare(b.group))
+
+  const active = payments.filter((p) => !p.paused)
+  return {
+    groups,
+    monthly: active.reduce((s, p) => s + p.amount, 0),
+    activeCount: active.length,
+  }
 }
 
 /** A rendered line: the section headers take part in the sort so a drag can cross sections. */
@@ -180,10 +255,56 @@ export const buildItemRows = (visible: Item[]) => buildRows(visible, URGENCIES, 
 export const applyItemDrag = (items: Item[], rows: Row<Item>[], from: number, to: number) =>
   applyDrag(items, rows, from, to, URGENCIES, (i, s) => ({ ...i, urgency: s as Urgency }))
 
-export const buildTodoRows = (visible: Todo[]) => buildRows(visible, WHENS, (t) => t.when)
+/**
+ * Reorder within the slice currently on screen, leaving everything else where it sits.
+ * The day views show one bucket at a time, so a drag must not disturb the other days.
+ */
+export function reorderVisible<T extends { id: string }>(
+  all: T[],
+  visible: T[],
+  from: number,
+  to: number,
+): T[] {
+  const ordered = arrayMove(visible, from, to)
+  const shown = new Set(visible.map((v) => v.id))
+  const slots = all.flatMap((t, i) => (shown.has(t.id) ? [i] : []))
+  const next = all.slice()
+  ordered.forEach((t, k) => (next[slots[k]] = t))
+  return next
+}
 
-export const applyTodoDrag = (todos: Todo[], rows: Row<Todo>[], from: number, to: number) =>
-  applyDrag(todos, rows, from, to, WHENS, (t, s) => ({ ...t, when: s as When }))
+/**
+ * Rough "does this look like it matters" score, used only to pick which task to surface
+ * as the preview of a day you aren't looking at. Deliberately dumb and readable: a
+ * hand-starred task always wins, then wording, then shouting. Never reorders the list —
+ * position stays the user's call.
+ */
+const SIGNALS: [RegExp, number][] = [
+  [/\b(urgent|asap|immediately|emergency)\b/i, 40],
+  [/\b(deadline|due|expir\w*|last day)\b/i, 30],
+  [/\b(pay|bill|rent|fee|fine|invoice|tax|emi)\b/i, 25],
+  [/\b(doctor|dentist|hospital|medicine|appointment)\b/i, 25],
+  [/\b(exam|test|submit|assignment|interview|deliver)\b/i, 20],
+  [/\b(call|email|reply|book|renew|cancel|collect)\b/i, 10],
+]
+
+export function importance(todo: Todo): number {
+  if (todo.important) return 1000
+  let score = 0
+  for (const [re, weight] of SIGNALS) if (re.test(todo.title)) score += weight
+  score += Math.min((todo.title.match(/!/g) ?? []).length, 3) * 15
+  if (/\b[A-Z]{3,}\b/.test(todo.title)) score += 10
+  return score
+}
+
+/** The one task worth showing from a day you're not looking at, plus how many it hides. */
+export function glimpse(todos: Todo[], when: When): { top: Todo | null; more: number } {
+  const open = todos.filter((t) => !t.done && t.when === when)
+  if (!open.length) return { top: null, more: 0 }
+  // Ties fall back to list position, which is the user's own ordering.
+  const top = open.reduce((best, t) => (importance(t) > importance(best) ? t : best), open[0])
+  return { top, more: open.length - 1 }
+}
 
 export const UNTAGGED = 'Untagged'
 
@@ -294,4 +415,9 @@ export function useItems() {
 export function useTodos() {
   const [todos, setTodos] = useStored(TODOS_KEY, parseTodos)
   return { todos, setTodos, replaceAll: setTodos }
+}
+
+export function usePayments() {
+  const [payments, setPayments] = useStored(PAYMENTS_KEY, parsePayments)
+  return { payments, setPayments }
 }
