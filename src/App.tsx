@@ -25,12 +25,14 @@ import {
   applyItemDrag,
   buildItemRows,
   cleanTag,
+  fillRatio,
   glimpse,
   groupPayments,
   monthlySpend,
   reorderVisible,
   rowId,
   safeUrl,
+  useBudget,
   useItems,
   usePayments,
   useTodos,
@@ -1376,6 +1378,143 @@ function MustPayments({
   )
 }
 
+/**
+ * Two waves of *different* wavelength drifting in *opposite* directions. One wave, however
+ * pretty, is a rigid shape sliding sideways and reads as a slideshow; two that disagree let
+ * the crests overtake and cancel each other, so the surface itself keeps changing shape.
+ *
+ * The viewBox is 600 wide against a real box of 592 (desktop) or 319 (mobile), so the
+ * horizontal scale is ≤1 and Bézier flattening never gets magnified into visible facets —
+ * this is what the old 100-wide viewBox got wrong, and it looked pixelated. Period is half
+ * the viewBox either way, so exactly two S-curves are on screen at any width.
+ *
+ * Each path is 1200 wide with the drift a whole number of periods, so the loop is seamless;
+ * the rightward one starts at -400 so drifting right never exposes its left edge.
+ */
+const WAVE_BACK = `M-400,0 q50,-8 100,0 ${'t100,0 '.repeat(11)}V200 H-400 Z`
+const WAVE_FRONT = `M0,0 q75,-12 150,0 ${'t150,0 '.repeat(7)}V200 H0 Z`
+
+/**
+ * A box that fills from the bottom to `pct`, with a slow drifting surface. The level rides
+ * a CSS custom property so `@starting-style` owns the from-empty rise on mount; if
+ * animations are off the box still lands at the right height, it just gets there instantly.
+ */
+function WaveBox({
+  pct,
+  color,
+  height,
+  children,
+}: {
+  pct: number
+  color: string
+  height: number
+  children?: React.ReactNode
+}) {
+  // 60 is the viewBox height; the surface sits at the top of the fill.
+  const y = (1 - pct) * 60
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-xl bg-[var(--card-2)]"
+      style={{ height }}
+    >
+      {pct > 0 && (
+        <svg
+          viewBox="0 0 600 60"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full"
+        >
+          <g className="bn-wave-level" style={{ '--bn-lvl': `${y}px` } as React.CSSProperties}>
+            <g className="bn-wave-back">
+              <path d={WAVE_BACK} fill={color} opacity={0.4} />
+            </g>
+            <g className="bn-wave-front">
+              <path d={WAVE_FRONT} fill={color} opacity={0.9} />
+            </g>
+          </g>
+        </svg>
+      )}
+      {children}
+    </div>
+  )
+}
+
+/**
+ * The only gauge with a real ceiling. Spending has no natural limit, so this one is the
+ * user's own number — unset, it offers to take one rather than inventing a figure.
+ */
+function BudgetGauge({ total }: { total: number }) {
+  const { budget, setBudget } = useBudget()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(budget ? String(budget) : '')
+
+  const save = () => {
+    const v = parseFloat(draft)
+    setBudget(isFinite(v) && v > 0 ? v : 0)
+    setEditing(false)
+  }
+
+  if (editing)
+    return (
+      <div className="flex items-center gap-2 pt-3">
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          inputMode="decimal"
+          placeholder="Monthly budget"
+          className={`${FIELD} w-32`}
+        />
+        <button onClick={save} className="text-[13px] font-semibold text-[#007AFF]">
+          Save
+        </button>
+        {/* Clearing is saving an empty field — parseFloat('') is NaN, which lands on 0. */}
+      </div>
+    )
+
+  if (budget <= 0)
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="pt-2 text-[13px] font-semibold text-[var(--muted)] transition-colors hover:text-[#007AFF]"
+      >
+        + Set a monthly budget
+      </button>
+    )
+
+  const pct = fillRatio(total, budget)
+  const over = total > budget
+  const color = over ? '#FF3B30' : pct > 0.8 ? '#FF9500' : '#34C759'
+
+  return (
+    <div className="pt-3">
+      <WaveBox pct={pct} color={color} height={64}>
+        <div className="absolute inset-0 flex items-center justify-between px-3.5">
+          <span className="text-[13px] font-semibold tracking-tight">
+            {over
+              ? `${money(total - budget)} over`
+              : `${money(budget - total)} left`}
+          </span>
+          <button
+            onClick={() => {
+              setDraft(String(budget))
+              setEditing(true)
+            }}
+            className="text-[13px] tabular-nums opacity-70"
+          >
+            of {money(budget)}
+          </button>
+        </div>
+      </WaveBox>
+    </div>
+  )
+}
+
 function MonthHistory({ months }: { months: ReturnType<typeof monthlySpend> }) {
   if (months.length === 0)
     return (
@@ -1401,8 +1540,11 @@ function MonthHistory({ months }: { months: ReturnType<typeof monthlySpend> }) {
       )}
 
       <div className="space-y-3">
-        {months.map((m) => {
-          const max = Math.max(...KINDS.map((k) => m.byKind[k]), 1)
+        {months.map((m, index) => {
+          // Share of the month, so the three always add up to one full month — no
+          // configuration needed for the category gauges to mean something.
+          const share = (v: number) => (m.total > 0 ? v / m.total : 0)
+          const isLatest = index === 0 && m.key !== 'undated'
           return (
             <div key={m.key} className="rounded-2xl bg-[var(--card)] px-4 py-4">
               <div className="flex items-baseline justify-between">
@@ -1415,22 +1557,18 @@ function MonthHistory({ months }: { months: ReturnType<typeof monthlySpend> }) {
                 {m.count} {m.count === 1 ? 'thing' : 'things'}
               </p>
 
-              <div className="space-y-1.5 pt-3">
+              {isLatest && <BudgetGauge total={m.total} />}
+
+              {/* Full width rather than three across: a wide box stretches the wave into the
+                  long curve it is meant to be, and leaves the labels somewhere legible. */}
+              <div className="space-y-2 pt-3">
                 {KINDS.map((k) => (
-                  <div key={k} className="flex items-center gap-2.5">
-                    <span className="w-11 shrink-0 text-[13px] text-[var(--muted)]">{k}</span>
-                    <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--card-2)]">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${(m.byKind[k] / max) * 100}%`,
-                          background: KIND_COLOR[k],
-                        }}
-                      />
+                  <div key={k}>
+                    <div className="flex items-baseline justify-between px-0.5 pb-1">
+                      <span className="text-[13px] text-[var(--muted)]">{k}</span>
+                      <span className="text-[13px] tabular-nums">{money(m.byKind[k])}</span>
                     </div>
-                    <span className="shrink-0 text-[13px] text-[var(--muted)] tabular-nums">
-                      {money(m.byKind[k])}
-                    </span>
+                    <WaveBox pct={share(m.byKind[k])} color={KIND_COLOR[k]} height={52} />
                   </div>
                 ))}
               </div>

@@ -8,6 +8,7 @@ import {
   buildItemRows,
   importance,
   cleanTag,
+  fillRatio,
   monthlySpend,
   reorderVisible,
   parseItems,
@@ -398,4 +399,16 @@ test('cleanTag trims, collapses whitespace, and drops empties', () => {
   assert.equal(cleanTag('   '), undefined)
   assert.equal(cleanTag(42), undefined)
   assert.equal(cleanTag('x'.repeat(50))?.length, 24)
+})
+
+/* ------------------------------------------------------------- wave gauges */
+
+test('fillRatio clamps at full and refuses to divide by a missing limit', () => {
+  assert.equal(fillRatio(50, 100), 0.5)
+  assert.equal(fillRatio(100, 100), 1)
+  assert.equal(fillRatio(250, 100), 1) // over budget still fills exactly one box
+  assert.equal(fillRatio(50, 0), 0) // no budget set -> nothing to fill toward
+  assert.equal(fillRatio(0, 100), 0)
+  assert.ok(Number.isFinite(fillRatio(10, -5)))
+  assert.equal(fillRatio(10, -5), 0)
 })

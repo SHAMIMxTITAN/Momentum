@@ -51,3 +51,59 @@ input {
 input::placeholder {
   color: var(--faint);
 }
+
+/* Wave gauge. Each path is wider than the viewBox plus its own drift, so it never runs out
+   of wave; the level is a transition off @starting-style, so the fill rises
+   from empty on mount. The level comes in as --bn-lvl rather than an inline transform
+   because an inline transform would outrank the starting style and kill the rise.
+   Motion is decorative only — the final height is correct with animations off, which is
+   what reduced-motion, older browsers, and non-compositing hosts get.
+
+   Opposite directions, and each distance is one whole period of its own path, so both
+   loop seamlessly while the two surfaces keep sliding out of phase with each other. */
+@keyframes bn-wave-front {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-300px);
+  }
+}
+
+@keyframes bn-wave-back {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(200px);
+  }
+}
+
+.bn-wave-front {
+  animation: bn-wave-front 9s linear infinite;
+}
+
+.bn-wave-back {
+  animation: bn-wave-back 7s linear infinite;
+}
+
+.bn-wave-level {
+  transform: translateY(var(--bn-lvl));
+  transition: transform 1100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@starting-style {
+  .bn-wave-level {
+    transform: translateY(60px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bn-wave-front,
+  .bn-wave-back {
+    animation: none;
+  }
+  .bn-wave-level {
+    transition: none;
+  }
+}

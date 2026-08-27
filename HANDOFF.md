@@ -55,6 +55,31 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   ledger with no cards, pills or drag, because these are commitments rather than choices.
   `groupPayments` totals them and buckets by a free-text `group`; a paused row stays listed but is
   excluded from every total, and an ungrouped one falls into "Other".
+- **Wave gauges.** `WaveBox` fills a rounded box from the bottom with a drifting surface: two
+  paths 1200 units wide inside `overflow-hidden`, each drifting a whole number of its own
+  periods on a CSS keyframe so the loop is seamless. **The viewBox is 600 wide and the front
+  period is 300, so exactly two S-curves are on screen at any box width** — the card is
+  max-width capped at 592px, so the horizontal scale is always ≤1 (measured 0.987 from 1280px
+  to 1920px viewports, 0.53 at 375px). Two mistakes were made here in order, and both read as
+  "the gauge is broken" rather than as a geometry bug:
+  **Faceting.** Béziers are flattened into line segments in *user* units, so a viewBox narrower
+  than the rendered box magnifies those segments into a visibly jagged edge. The 100-wide
+  viewBox was a 5.9× crush and looked pixelated. *Never let the horizontal scale exceed 1.* An
+  even earlier 300-wide viewBox in a ~100px box turned the sine into seven visible bumps.
+  **Slideshow.** One wave — or two identical ones at different speeds — is a rigid shape sliding
+  sideways, and does not read as animation however slow it is. The fix is two waves that
+  *disagree*: different wavelength (300 vs 200) and opposite directions, so crests overtake and
+  cancel and the surface keeps changing shape. Amplitude must be visible too — ~5px in a 52px
+  box. The old "amplitude ≈ a fiftieth of the wavelength" rule was an overcorrection that
+  flattened the wave to 2.6px, which is what made it look like a sliding bar.
+  The level is a CSS *transition* off `@starting-style`, so it rises from empty on mount and
+  still lands at the right height when animation is off; it rides a `--bn-lvl` custom property
+  because an inline `transform` would outrank the starting style and kill the rise. All of it is
+  decorative — `prefers-reduced-motion` kills it and the reading
+  stays correct. The three kind gauges fill by **share of that month**, so they always sum to a
+  full month and need no configuration; the only gauge with a real ceiling is the optional
+  monthly budget (`buy-next.budget`, local, 0 = unset), which is green, amber past 80% and red
+  over. Spending has no natural limit, so never invent one — if unset, offer to take a number.
 - **Spending** is derived, never stored: `monthlySpend` buckets bought items by the month of
   `boughtAt`, splits Need/Want, and breaks each month down by tag. Items bought before `boughtAt`
   existed land in an "undated" bucket rather than being dropped.

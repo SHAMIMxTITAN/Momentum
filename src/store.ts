@@ -421,3 +421,27 @@ export function usePayments() {
   const [payments, setPayments] = useStored(PAYMENTS_KEY, parsePayments)
   return { payments, setPayments }
 }
+
+const BUDGET_KEY = 'buy-next.budget'
+
+/**
+ * An optional ceiling for a month's spending. Spending has no natural limit, so without
+ * one a "filling up" gauge has nothing to fill toward — 0 means unset, and the month
+ * gauge is simply hidden rather than guessing a number on the user's behalf.
+ */
+export function useBudget() {
+  // NaN (junk) and negatives both collapse to 0, which is "unset".
+  const [budget, setBudget] = useState(() =>
+    Math.max(0, Number(localStorage.getItem(BUDGET_KEY)) || 0),
+  )
+  useEffect(() => {
+    localStorage.setItem(BUDGET_KEY, String(budget))
+  }, [budget])
+  return { budget, setBudget }
+}
+
+/** 0..1, and how far past the line if it went over. Guards a zero or missing limit. */
+export function fillRatio(value: number, limit: number): number {
+  if (!(limit > 0) || !(value > 0)) return 0
+  return Math.min(value / limit, 1)
+}
