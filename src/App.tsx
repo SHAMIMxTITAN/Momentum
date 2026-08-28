@@ -718,31 +718,33 @@ function ItemRow({
               done={() => setEditing(null)}
             />
           ) : (
-            <div className="flex items-start gap-2.5">
-              <button
-                onClick={cycleKind}
-                aria-label={`${item.kind}, tap to switch`}
-                className="relative mt-0.5 shrink-0 rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold tracking-tight text-white after:absolute after:-inset-y-2.5 after:content-['']"
-                style={{ background: KIND_COLOR[item.kind] }}
-              >
-                {item.kind}
-              </button>
-              {item.tag && (
-                <span className="mt-0.5 shrink-0 rounded-full bg-[var(--card-2)] px-2.5 py-1 text-[12px] leading-none text-[var(--muted)]">
-                  {item.tag}
-                </span>
-              )}
+            <div>
               <button
                 onClick={() => setEditing(item.id)}
-                className="min-w-0 flex-1 text-left text-[17px] tracking-tight break-words hyphens-auto"
+                className="block w-full text-left text-[17px] tracking-tight break-words"
               >
                 {item.title}
               </button>
-              {item.price != null && (
-                <span className="shrink-0 text-[15px] text-[var(--muted)] tabular-nums">
-                  {money(item.price)}
-                </span>
-              )}
+              <div className="mt-1.5 flex items-center gap-2">
+                <button
+                  onClick={cycleKind}
+                  aria-label={`${item.kind}, tap to switch`}
+                  className="relative shrink-0 rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold tracking-tight text-white after:absolute after:-inset-y-2.5 after:content-['']"
+                  style={{ background: KIND_COLOR[item.kind] }}
+                >
+                  {item.kind}
+                </button>
+                {item.tag && (
+                  <span className="min-w-0 truncate rounded-full bg-[var(--card-2)] px-2.5 py-1 text-[12px] leading-none text-[var(--muted)]">
+                    {item.tag}
+                  </span>
+                )}
+                {item.price != null && (
+                  <span className="ml-auto shrink-0 text-[15px] text-[var(--muted)] tabular-nums">
+                    {money(item.price)}
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
