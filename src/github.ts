@@ -89,7 +89,7 @@ export async function push(
     method: 'PUT',
     headers: { ...headers(cfg.token), 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      message: `buy-next: ${rows.length} ${label}${rows.length === 1 ? '' : 's'}`,
+      message: `momentum: ${rows.length} ${label}${rows.length === 1 ? '' : 's'}`,
       content: b64encode(serialize(rows)),
       ...(sha ? { sha } : {}),
     }),

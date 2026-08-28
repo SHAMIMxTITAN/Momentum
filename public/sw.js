@@ -1,7 +1,7 @@
 // Hand-rolled instead of Workbox: assets are content-hashed, so the rules are trivial.
 // /assets/* filenames change on every build -> cache-first is always safe.
 // Everything else (index.html, manifest, icons) -> network-first so a deploy lands immediately.
-const CACHE = 'buy-next-v1'
+const CACHE = 'momentum-v1'
 
 // The page registers us after it has already fetched its own assets, so nothing would be
 // cached until the second visit. Read index.html and pull the hashed asset URLs out of it —

@@ -1,4 +1,4 @@
-# Buy Next
+# Momentum
 
 One ordered list of things to buy. The order is the priority.
 

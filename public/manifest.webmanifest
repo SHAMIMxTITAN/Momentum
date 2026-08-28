@@ -1,6 +1,6 @@
 {
-  "name": "Buy Next",
-  "short_name": "Buy Next",
+  "name": "Momentum",
+  "short_name": "Momentum",
   "description": "One ordered list of things to buy. The order is the priority.",
   "start_url": "./",
   "scope": "./",

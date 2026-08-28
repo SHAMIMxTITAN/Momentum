@@ -343,7 +343,7 @@ function BuyView({
     )
     const a = document.createElement('a')
     a.href = url
-    a.download = `buy-next-${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `momentum-${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -1636,7 +1636,7 @@ function SyncPanel({
   const [d, setD] = useState({
     token: cfg?.token ?? '',
     repo: cfg?.repo ?? '',
-    path: cfg?.path ?? 'buy-next.json',
+    path: cfg?.path ?? 'momentum.json',
   })
   const ok = d.token.trim().length > 10 && validRepo(d.repo) && d.path.trim().length > 0
   const cls = `${FIELD} w-full`
@@ -1663,7 +1663,7 @@ function SyncPanel({
         <input
           value={d.path}
           onChange={(e) => setD({ ...d, path: e.target.value })}
-          placeholder="buy-next.json"
+          placeholder="momentum.json"
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
@@ -1690,7 +1690,7 @@ function SyncPanel({
         {cfg && (
           <button
             onClick={() => {
-              setD({ token: '', repo: '', path: 'buy-next.json' })
+              setD({ token: '', repo: '', path: 'momentum.json' })
               setCfg(null)
             }}
             className="rounded-full bg-[var(--field)] px-3.5 py-1.5 text-[14px] font-semibold text-[#FF3B30]"

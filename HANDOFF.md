@@ -1,4 +1,4 @@
-# Handoff — Buy Next
+# Handoff — Momentum
 
 Personal "what to buy next" app. Single user, local-first, no login. Built in a previous
 session; this file is the context for continuing it.
