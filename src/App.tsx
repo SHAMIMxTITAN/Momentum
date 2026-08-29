@@ -74,6 +74,12 @@ const SPRING = { type: 'spring' as const, stiffness: 520, damping: 36, mass: 0.7
 // Grows the tap area to a thumb-sized box without changing the icon's footprint.
 const TAP = "relative after:absolute after:-inset-x-1.5 after:-inset-y-3 after:content-['']"
 
+// dnd-kit auto-scrolls every scrollable ancestor you drag near the edge of, and the tab pager
+// is one of them — with the grip 20px from the left, every drag sat inside the pager's own
+// scroll zone and slid it into the previous tab, or fought scroll-snap into a flicker. Rows
+// only ever move vertically, so vertical scrollers are the only ones worth auto-scrolling.
+const AUTO_SCROLL_Y = { canScroll: (el: Element) => el.scrollHeight > el.clientHeight }
+
 const inr = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 })
 const money = (n: number) => `₹${inr.format(n)}`
 
@@ -474,6 +480,7 @@ function BuyView({
           </div>
 
           <DndContext
+            autoScroll={AUTO_SCROLL_Y}
             sensors={sensors}
             collisionDetection={closestCenter}
             modifiers={[restrictToVerticalAxis]}
@@ -1112,6 +1119,7 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
         // just a view change — removals within a day still animate normally.
         <div className="pt-4" key={day}>
           <DndContext
+            autoScroll={AUTO_SCROLL_Y}
             sensors={sensors}
             collisionDetection={closestCenter}
             modifiers={[restrictToVerticalAxis]}
