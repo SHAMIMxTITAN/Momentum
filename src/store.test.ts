@@ -7,6 +7,7 @@ import {
   groupPayments,
   buildItemRows,
   importance,
+  isDone,
   cleanTag,
   fillRatio,
   monthlySpend,
@@ -413,3 +414,34 @@ test('fillRatio clamps at full and refuses to divide by a missing limit', () => 
   assert.equal(fillRatio(10, -5), 0)
 })
 
+
+/* ------------------------------------------------------------ daily tasks */
+
+test('a daily task comes back open the next day; a one-off stays done', () => {
+  const now = new Date('2026-08-29T09:00:00')
+  const base = { id: 'x', title: 'Fajr', when: 'Today' as const }
+  const at = (iso: string) => ({ ...base, daily: true, done: true, doneAt: iso })
+
+  // ticked earlier today -> still done
+  assert.equal(isDone(at('2026-08-29T05:30:00'), now), true)
+  // ticked yesterday -> open again, without anything having reset it
+  assert.equal(isDone(at('2026-08-28T05:30:00'), now), false)
+  // never ticked
+  assert.equal(isDone({ ...base, daily: true, done: false }, now), false)
+  // done flag with no timestamp is not trusted
+  assert.equal(isDone({ ...base, daily: true, done: true }, now), false)
+  // junk timestamp must not read as "today"
+  assert.equal(isDone({ ...base, daily: true, done: true, doneAt: 'nonsense' }, now), false)
+  // a one-off ignores the date entirely
+  assert.equal(isDone({ ...base, done: true, doneAt: '2020-01-01T00:00:00' }, now), true)
+  assert.equal(isDone({ ...base, done: false }, now), false)
+})
+
+test('parseTodos pins a daily to Today and drops a non-true daily flag', () => {
+  const [a] = parseTodos([{ title: 'Namaz', when: 'This week', daily: true }])
+  assert.equal(a.when, 'Today')
+  assert.equal(a.daily, true)
+  const [b] = parseTodos([{ title: 'Once', when: 'Tomorrow', daily: 'yes' }])
+  assert.equal(b.when, 'Tomorrow')
+  assert.equal(b.daily, undefined)
+})

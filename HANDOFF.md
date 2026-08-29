@@ -49,6 +49,20 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   which is what stops a short page inheriting a tall one.'s height. **Any inner
   horizontal scroller needs `overscroll-x-contain`** or reaching its end chains the rest
   of the gesture to the pager and flips the page.
+- **Daily tasks are a flag, not a second list.** `todo.daily` marks a standing task (Namaz,
+  an English lesson). It is pinned to `when: 'Today'` — `parseTodos` forces that even if a
+  file says otherwise — and lives in the same ordered Today list as one-offs. **That is the
+  whole reason it is not its own section:** a one-off has to be orderable *between* two
+  dailies ("wudu, before Fajr"), which a separate section makes impossible.
+  `isDone(t, now)` is the reset: a daily counts as done only if `doneAt` falls on today's
+  local calendar day, so it reopens every morning with **no timer, no reset pass and no
+  stored "last reset" date** to drift or to disagree between two machines. `done` stays true
+  in storage and is simply ignored for dailies. Every open/done filter must go through
+  `isDone`, never `t.done` — `glimpse` included, since viewing "This week" peeks at Today.
+  Set it on creation with the repeat toggle in the add bar, or flip an existing task from
+  the inline editor (tap the title). The editor toggle is `onPointerDown` with
+  `preventDefault`, because the input's `onBlur` closes the editor and would otherwise eat
+  a plain click. Dailies show a small repeat glyph and lose the move-to-next-day chevron.
 - **Sections.** Items group into Now / Soon / Later / Maybe. The section headers and the "Nothing here"
   ghosts are themselves members of the dnd-kit sortable list — that is what makes dragging
   across a boundary reassign `urgency`. `applyDrag` re-reads each item's urgency from the

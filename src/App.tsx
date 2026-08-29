@@ -17,7 +17,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import { Check, ChevronRight, GripVertical, Moon, Sun, Star, X } from 'lucide-react'
+import { Check, ChevronRight, GripVertical, Moon, Repeat, Sun, Star, X } from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
@@ -29,6 +29,7 @@ import {
   glimpse,
   groupPayments,
   monthlySpend,
+  isDone,
   reorderVisible,
   rowId,
   safeUrl,
@@ -971,15 +972,16 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const [day, setDay] = useState<When>('Today')
   const [editing, setEditing] = useState<string | null>(null)
   const [showDone, setShowDone] = useState(false)
+  const [asDaily, setAsDaily] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
-  const openOn = (w: When) => todos.filter((t) => !t.done && t.when === w)
+  const openOn = (w: When) => todos.filter((t) => !isDone(t) && t.when === w)
   const shown = openOn(day)
-  const done = todos.filter((t) => t.done)
+  const done = todos.filter((t) => isDone(t))
 
   // Peek at the next bucket along, so tomorrow can warn you without taking the screen.
   const nextDay = WHENS[(WHENS.indexOf(day) + 1) % WHENS.length]
@@ -987,7 +989,17 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
 
   const add = () => {
     if (!title.trim()) return
-    setTodos([...todos, { id: crypto.randomUUID(), title: title.trim(), when: day, done: false }])
+    setTodos([
+      ...todos,
+      {
+        id: crypto.randomUUID(),
+        title: title.trim(),
+        // A daily belongs to Today whichever day you happened to be looking at.
+        when: asDaily ? 'Today' : day,
+        done: false,
+        daily: asDaily || undefined,
+      },
+    ])
     setTitle('')
   }
 
@@ -997,8 +1009,11 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const toggle = (t: Todo) =>
     patch(t.id, { done: !t.done, doneAt: t.done ? undefined : new Date().toISOString() })
 
-  const moveOn = (t: Todo) =>
+  // A standing task has no "next day" to be pushed to — it belongs to every one.
+  const moveOn = (t: Todo) => {
+    if (t.daily) return
     patch(t.id, { when: WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length] })
+  }
 
   const remove = (t: Todo) => setTodos(todos.filter((x) => x.id !== t.id))
 
@@ -1046,9 +1061,23 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && add()}
-          placeholder={`Add to ${day.toLowerCase()}`}
+          placeholder={asDaily ? 'Add a daily task' : `Add to ${day.toLowerCase()}`}
           className="w-full bg-transparent py-3.5 text-[17px] tracking-tight outline-none"
         />
+        <button
+          onClick={() => setAsDaily((d) => !d)}
+          aria-pressed={asDaily}
+          aria-label="Make this a daily task"
+          title="Every day"
+          className="shrink-0 rounded-full p-1.5 transition-colors"
+          style={
+            asDaily
+              ? { background: `${WHEN_COLOR.Today}1F`, color: WHEN_COLOR.Today }
+              : { color: 'var(--faint)' }
+          }
+        >
+          <Repeat size={16} />
+        </button>
       </div>
 
       {shown.length === 0 ? (
@@ -1079,6 +1108,9 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
                     onStar={() => patch(t.id, { important: t.important ? undefined : true })}
                     onMove={() => moveOn(t)}
                     nextDay={WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length]}
+                    onDaily={() =>
+                      patch(t.id, { daily: t.daily ? undefined : true, when: 'Today' })
+                    }
                     onDelete={() => remove(t)}
                   />
                 ))}
@@ -1167,6 +1199,7 @@ function TodoRow({
   onStar,
   onMove,
   nextDay,
+  onDaily,
   onDelete,
 }: {
   todo: Todo
@@ -1177,6 +1210,7 @@ function TodoRow({
   onStar: () => void
   onMove: () => void
   nextDay: When
+  onDaily: () => void
   onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
@@ -1243,9 +1277,36 @@ function TodoRow({
               setDraft(todo.title)
               setEditing(todo.id)
             }}
-            className="min-w-0 flex-1 text-left text-[17px] tracking-tight break-words"
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[17px] tracking-tight break-words"
           >
-            {todo.title}
+            {/* Marker, not a control — turning it off lives in the editor, so the row
+                never grows a sixth button just to say "this one repeats". */}
+            {todo.daily && (
+              <Repeat size={12} className="shrink-0 text-[var(--faint)]" aria-label="Daily" />
+            )}
+            <span className="min-w-0">{todo.title}</span>
+          </button>
+        )}
+
+        {/* onPointerDown, not onClick: the input's onBlur fires first and closes the editor,
+            which would eat a plain click before it lands. */}
+        {editing && (
+          <button
+            onPointerDown={(e) => {
+              e.preventDefault()
+              onDaily()
+            }}
+            aria-pressed={!!todo.daily}
+            aria-label={todo.daily ? `Stop repeating ${todo.title}` : `Repeat ${todo.title} daily`}
+            title={todo.daily ? 'Stop repeating' : 'Every day'}
+            className="shrink-0 rounded-full p-1 transition-colors"
+            style={
+              todo.daily
+                ? { background: `${WHEN_COLOR.Today}1F`, color: WHEN_COLOR.Today }
+                : { color: 'var(--faint)' }
+            }
+          >
+            <Repeat size={16} />
           </button>
         )}
 
@@ -1259,14 +1320,16 @@ function TodoRow({
           <Star size={16} fill={todo.important ? '#FF9500' : 'none'} />
         </button>
 
-        <button
-          onClick={onMove}
-          aria-label={`Move ${todo.title} to ${nextDay}`}
-          title={`Move to ${nextDay}`}
-          className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[var(--text)]"
-        >
-          <ChevronRight size={16} />
-        </button>
+        {!todo.daily && (
+          <button
+            onClick={onMove}
+            aria-label={`Move ${todo.title} to ${nextDay}`}
+            title={`Move to ${nextDay}`}
+            className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[var(--text)]"
+          >
+            <ChevronRight size={16} />
+          </button>
+        )}
 
         <button
           onPointerDown={onDelete}

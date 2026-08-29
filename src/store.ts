@@ -33,6 +33,13 @@ export type Todo = {
   doneAt?: string
   /** Starred by hand. Always outranks anything the text heuristic infers. */
   important?: boolean
+  /**
+   * A standing task — Namaz, an English lesson. It lives in Today permanently and comes
+   * back open every morning. Deliberately a flag rather than a second list: a one-off has
+   * to be orderable *between* two dailies ("before Fajr"), which only works if they share
+   * one ordered list.
+   */
+  daily?: boolean
 }
 
 /**
@@ -132,12 +139,17 @@ export function parseTodos(raw: unknown): Todo[] {
       {
         id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
         title,
-        when: (WHENS as readonly string[]).includes(o.when as string)
-          ? (o.when as When)
-          : 'Today',
+        // A daily is pinned to Today, whatever the file claims.
+        when:
+          o.daily === true
+            ? 'Today'
+            : (WHENS as readonly string[]).includes(o.when as string)
+              ? (o.when as When)
+              : 'Today',
         done: o.done === true,
         doneAt: typeof o.doneAt === 'string' ? o.doneAt : undefined,
         important: o.important === true ? true : undefined,
+        daily: o.daily === true ? true : undefined,
       },
     ]
   })
@@ -298,8 +310,20 @@ export function importance(todo: Todo): number {
 }
 
 /** The one task worth showing from a day you're not looking at, plus how many it hides. */
+/**
+ * A daily is only ever done *for today* — yesterday's tick does not carry over, so it comes
+ * back open every morning. Derived from `doneAt` on purpose: no reset pass, no timer, and
+ * no stored "last reset" date to drift or to disagree between two machines. A one-off is
+ * just `done`. Local calendar day, which is the one the user is actually living in.
+ */
+export function isDone(t: Todo, now: Date = new Date()): boolean {
+  if (!t.daily) return t.done
+  if (!t.done || !t.doneAt) return false
+  return new Date(t.doneAt).toDateString() === now.toDateString()
+}
+
 export function glimpse(todos: Todo[], when: When): { top: Todo | null; more: number } {
-  const open = todos.filter((t) => !t.done && t.when === when)
+  const open = todos.filter((t) => !isDone(t) && t.when === when)
   if (!open.length) return { top: null, more: 0 }
   // Ties fall back to list position, which is the user's own ordering.
   const top = open.reduce((best, t) => (importance(t) > importance(best) ? t : best), open[0])
