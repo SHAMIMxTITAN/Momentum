@@ -450,12 +450,24 @@ function BuyView({
             ))}
           </div>
 
-          <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 pt-3 text-[13px] tracking-tight text-[var(--muted)]">
-            <span className="font-semibold text-[#FF3B30]">Now {money(nowTotal)}</span>
-            <span>Need {money(needTotal)}</span>
-            <span>
-              Open {money(openTotal)} · {open.length} {open.length === 1 ? 'item' : 'items'}
-            </span>
+          {/* The real number leads, at a size you can read it at. The urgency splits are
+              captions under it and only appear when they are not zero — "Now ₹0" is a
+              label with nothing to say. */}
+          <div className="px-1 pt-4 pb-1">
+            <p className="text-[22px] leading-none font-semibold tracking-tight tabular-nums">
+              {money(openTotal)}
+            </p>
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 pt-1.5 text-[13px] tracking-tight text-[var(--muted)]">
+              <span>
+                {open.length} {open.length === 1 ? 'item' : 'items'} open
+              </span>
+              {nowTotal > 0 && (
+                <span className="font-semibold text-[#FF3B30] tabular-nums">
+                  {money(nowTotal)} now
+                </span>
+              )}
+              {needTotal > 0 && <span className="tabular-nums">{money(needTotal)} needed</span>}
+            </div>
           </div>
 
           <DndContext
@@ -469,7 +481,7 @@ function BuyView({
                 {rows.map((r) =>
                   r.kind === 'header' ? (
                     <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
-                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[12px] font-semibold tracking-[0.08em] text-[var(--muted)] uppercase">
+                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
                         <span
                           className="size-1.5 shrink-0 rounded-full"
                           style={{ background: URGENCY_COLOR[r.section as Urgency] }}
@@ -775,8 +787,11 @@ function ItemRow({
                 <button
                   onClick={cycleKind}
                   aria-label={`${item.kind}, tap to switch`}
-                  className="relative shrink-0 rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold tracking-tight text-white after:absolute after:-inset-y-2.5 after:content-['']"
-                  style={{ background: KIND_COLOR[item.kind] }}
+                  className="relative shrink-0 rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold tracking-tight after:absolute after:-inset-y-2.5 after:content-['']"
+                  // Tinted, not filled. A solid pill on every row turns the list into a
+                  // colour chart; at 12% the hue still reads but the title leads again.
+                  // Selected filter chips stay solid — there the colour *is* the state.
+                  style={{ background: `${KIND_COLOR[item.kind]}1F`, color: KIND_COLOR[item.kind] }}
                 >
                   {item.kind}
                 </button>
@@ -1340,40 +1355,55 @@ function MustPayments({
         </p>
       </div>
 
+      {/* <details> rather than a useState toggle: the disclosure, the keyboard and the
+          accessibility semantics are all free, and the group total stays readable shut —
+          which is the point, since the rows are reference, not something to scan daily. */}
       {groups.map((g) => (
-        <div key={g.group} className="pt-5">
-          <div className="flex items-baseline justify-between px-1 pb-1.5">
+        <details key={g.group} className="group pt-4">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 px-1 py-1.5 [&::-webkit-details-marker]:hidden">
+            <ChevronRight
+              size={12}
+              className="shrink-0 text-[var(--faint)] transition-transform duration-200 group-open:rotate-90"
+            />
             <h3 className="text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
               {g.group}
             </h3>
-            <span className="text-[13px] text-[var(--muted)] tabular-nums">{money(g.total)}</span>
+            <span className="ml-auto text-[13px] text-[var(--muted)] tabular-nums">
+              {money(g.total)}
+            </span>
+          </summary>
+          <div className="mt-1 overflow-hidden rounded-2xl bg-[var(--card)]">
+            {g.rows.map((p, i) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 px-4 py-2.5"
+                style={{
+                  opacity: p.paused ? 0.45 : 1,
+                  // Inset hairline, aligned to the text rather than the card edge.
+                  boxShadow: i ? 'inset 0 0.5px 0 var(--separator)' : undefined,
+                }}
+              >
+                <button
+                  onClick={() => patch(p.id, { paused: p.paused ? undefined : true })}
+                  aria-label={p.paused ? `Resume ${p.name}` : `Pause ${p.name}`}
+                  title={p.paused ? 'Resume' : 'Pause'}
+                  className="min-w-0 flex-1 truncate text-left text-[16px] tracking-tight"
+                  style={{ textDecoration: p.paused ? 'line-through' : 'none' }}
+                >
+                  {p.name}
+                </button>
+                <span className="shrink-0 text-[16px] tabular-nums">{money(p.amount)}</span>
+                <button
+                  onClick={() => remove(p.id)}
+                  aria-label={`Delete ${p.name}`}
+                  className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ))}
           </div>
-          {g.rows.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center gap-3 px-1 py-2.5"
-              style={{ opacity: p.paused ? 0.45 : 1 }}
-            >
-              <button
-                onClick={() => patch(p.id, { paused: p.paused ? undefined : true })}
-                aria-label={p.paused ? `Resume ${p.name}` : `Pause ${p.name}`}
-                title={p.paused ? 'Resume' : 'Pause'}
-                className="min-w-0 flex-1 text-left text-[16px] tracking-tight"
-                style={{ textDecoration: p.paused ? 'line-through' : 'none' }}
-              >
-                {p.name}
-              </button>
-              <span className="shrink-0 text-[16px] tabular-nums">{money(p.amount)}</span>
-              <button
-                onClick={() => remove(p.id)}
-                aria-label={`Delete ${p.name}`}
-                className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
-              >
-                <X size={15} />
-              </button>
-            </div>
-          ))}
-        </div>
+        </details>
       ))}
 
       {open ? (

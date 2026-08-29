@@ -11,6 +11,8 @@
   --muted: #8e8e93;
   --faint: #b0b0b8;
   --ghost: #b0b0b8;
+  /* iOS separator: a hairline that reads as a gap, never as a border. */
+  --separator: rgba(60, 60, 67, 0.18);
 }
 
 .dark {
@@ -22,6 +24,7 @@
   --muted: #98989f;
   --faint: #6b6b70;
   --ghost: #5a5a5f;
+  --separator: rgba(84, 84, 88, 0.45);
 }
 
 html {

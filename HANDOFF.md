@@ -90,6 +90,12 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   full month and need no configuration; the only gauge with a real ceiling is the optional
   monthly budget (`buy-next.budget`, local, 0 = unset), which is green, amber past 80% and red
   over. Spending has no natural limit, so never invent one — if unset, offer to take a number.
+- **Payment groups collapse.** Each group is a native `<details>`, closed by default — the
+  rows are reference, not a daily scan, and the group total stays readable shut. No state,
+  no JS: the disclosure, keyboard and a11y semantics come free. Tailwind v4 does generate
+  `group-open:rotate-90`, and its `transition-transform` covers the `rotate` property, so
+  the chevron animates. Rows sit in an inset grouped card with a 0.5px `--separator`
+  hairline between them (`box-shadow: inset`, skipped on the first row).
 - **Spending** is derived, never stored: `monthlySpend` buckets bought items by the month of
   `boughtAt`, splits Need/Want, and breaks each month down by tag. Items bought before `boughtAt`
   existed land in an "undated" bucket rather than being dropped.
@@ -122,8 +128,11 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
 ## Visual rules
 
 Minimal, flat: **no borders, no shadows heavier than `shadow-sm`, no gradients, no
-glassmorphism**. System font stack. Kind pills are **solid filled, white text**: Need `#007AFF`,
-Both `#30B0C7`, Want `#AF52DE`; the free tag is a quiet neutral pill beside it. Urgency headers are quiet 12px uppercase `--muted` labels with a 6px colour dot (they were 20px semibold in the accent colour until 2026-08-29 — four saturated headers over mostly-empty sections read as loud, not premium). The dot keeps the signal:
+glassmorphism**. System font stack. Kind pills on a row are **tinted, not filled** — the accent at 12% (`+1F`) behind the accent
+as text: Need `#007AFF`, Both `#30B0C7`, Want `#AF52DE`. They were solid fills with white
+text until 2026-08-29; on every row that turned the list into a colour chart instead of a
+list of things. Selected *filter* chips stay solid, because there the colour is the state.
+The free tag is a quiet neutral pill beside it. Urgency headers are quiet 12px uppercase `--muted` labels with a 6px colour dot (they were 20px semibold in the accent colour until 2026-08-29 — four saturated headers over mostly-empty sections read as loud, not premium). The dot keeps the signal:
 Now `#FF3B30`, Soon `#FF9500`, Later `#8E8E93`, Maybe `#5E5CE6`. Springy ~200ms motion, respect
 `prefers-reduced-motion`. No sidebars, no logo header.
 
