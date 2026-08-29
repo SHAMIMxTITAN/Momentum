@@ -750,7 +750,7 @@ function ItemRow({
     >
       <motion.div
         exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        className="mb-2.5 flex items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
+        className="mb-2.5 flex touch-pan-y items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
         style={isDragging ? { background: 'var(--card-2)' } : undefined}
       >
         <button
@@ -917,9 +917,12 @@ function EditFields({
           placeholder="Link"
           className={`${FIELD} min-w-0 flex-1`}
         />
-        {/* pointerDown, not click: blur-to-save can unmount this before a click lands */}
+        {/* preventDefault on pointerDown, not delete on it: blur-to-save would unmount this
+            before a click lands, but deleting on touch-down means any finger that grazes
+            the row on its way past takes the item with it. */}
         <button
-          onPointerDown={onDelete}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={onDelete}
           aria-label={`Delete ${item.title}`}
           className="shrink-0 rounded-lg px-2 py-1.5 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
         >
@@ -1267,7 +1270,7 @@ function TodoRow({
     >
       <motion.div
         exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        className="mb-2.5 flex items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
+        className="mb-2.5 flex touch-pan-y items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
         style={
           isDragging
             ? { background: 'var(--card-2)' }
@@ -1381,7 +1384,8 @@ function TodoRow({
         )}
 
         <button
-          onPointerDown={onDelete}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={onDelete}
           aria-label={`Delete ${todo.title}`}
           className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
         >
