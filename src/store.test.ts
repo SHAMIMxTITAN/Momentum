@@ -11,7 +11,6 @@ import {
   fillRatio,
   monthlySpend,
   reorderVisible,
-  swipeTab,
   parseItems,
   parsePayments,
   parseTodos,
@@ -414,15 +413,3 @@ test('fillRatio clamps at full and refuses to divide by a missing limit', () => 
   assert.equal(fillRatio(10, -5), 0)
 })
 
-/* -------------------------------------------------------------- swipe tabs */
-
-test('swipeTab needs a clearly horizontal gesture and never wraps', () => {
-  const tabs = ['Buy', 'To-do', 'Spending'] as const
-  assert.equal(swipeTab(tabs, 'To-do', -80, 0), 'Spending') // left -> next
-  assert.equal(swipeTab(tabs, 'To-do', 80, 0), 'Buy') // right -> previous
-  assert.equal(swipeTab(tabs, 'Buy', 80, 0), null) // already at the start
-  assert.equal(swipeTab(tabs, 'Spending', -80, 0), null) // already at the end
-  assert.equal(swipeTab(tabs, 'To-do', 40, 0), null) // too short to count
-  assert.equal(swipeTab(tabs, 'To-do', 80, 60), null) // a diagonal scroll, not a swipe
-  assert.equal(swipeTab(tabs, 'To-do', 0, 200), null) // plain vertical scroll
-})

@@ -446,12 +446,3 @@ export function fillRatio(value: number, limit: number): number {
   return Math.min(value / limit, 1)
 }
 
-/**
- * Which tab a horizontal swipe lands on, or null if the gesture was not one.
- * Needs to be clearly horizontal (twice the vertical travel) so scrolling and
- * vertical item drags never change tab. Does not wrap: the ends are the ends.
- */
-export function swipeTab<T>(tabs: readonly T[], current: T, dx: number, dy: number): T | null {
-  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return null
-  return tabs[tabs.indexOf(current) + (dx < 0 ? 1 : -1)] ?? null
-}

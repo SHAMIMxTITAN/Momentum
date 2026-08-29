@@ -39,6 +39,16 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   it is deliberately its own column in `monthlySpend` rather than folded into either side.
   `parseItems` migrates old files: the old category name survives as the tag. Don't reintroduce
   a fixed list.
+- **Paging.** The three tabs are one native CSS scroll-snap row (`snap-x snap-mandatory`,
+  one full-width `snap-start` section each). The browser does the finger-tracking, the
+  throw velocity and the snap, so there is no animation code and no touch maths — an
+  earlier hand-rolled touchstart/touchend version was a jump cut and also hijacked swipes
+  meant for the tag chip row. **Scroll position is the source of truth**; `onScroll` only
+  mirrors it into `tab` so the header can highlight one, and the header sits outside the
+  scroller. Each page scrolls vertically on its own (`h-dvh` column + `min-h-0 flex-1`),
+  which is what stops a short page inheriting a tall one.'s height. **Any inner
+  horizontal scroller needs `overscroll-x-contain`** or reaching its end chains the rest
+  of the gesture to the pager and flips the page.
 - **Sections.** Items group into Now / Soon / Later / Maybe. The section headers and the "Nothing here"
   ghosts are themselves members of the dnd-kit sortable list — that is what makes dragging
   across a boundary reassign `urgency`. `applyDrag` re-reads each item's urgency from the

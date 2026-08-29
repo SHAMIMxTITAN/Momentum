@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   KeyboardSensor,
@@ -30,7 +30,6 @@ import {
   groupPayments,
   monthlySpend,
   reorderVisible,
-  swipeTab,
   rowId,
   safeUrl,
   useBudget,
@@ -91,22 +90,28 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('To-do')
   const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
 
-  // Swipe left/right to change tab. Touch only, and only on a clearly horizontal
-  // gesture — dnd-kit owns dragging, but its listeners are on the grip handle alone,
-  // so a swipe anywhere else on a row cannot start one.
-  const swipeFrom = useRef<{ x: number; y: number } | null>(null)
-  const onTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0]
-    swipeFrom.current = { x: t.clientX, y: t.clientY }
+  const pager = useRef<HTMLDivElement>(null)
+
+  // The scroll position is the source of truth for which tab is showing; this only
+  // mirrors it into state so the header can highlight one.
+  const onScroll = () => {
+    const el = pager.current
+    if (!el) return
+    const next = TABS[Math.round(el.scrollLeft / el.clientWidth)]
+    if (next && next !== tab) setTab(next)
   }
-  const onTouchEnd = (e: React.TouchEvent) => {
-    const from = swipeFrom.current
-    swipeFrom.current = null
-    if (!from) return
-    const t = e.changedTouches[0]
-    const next = swipeTab(TABS, tab, t.clientX - from.x, t.clientY - from.y)
-    if (next) setTab(next)
+
+  const goTo = (t: Tab) => {
+    const el = pager.current
+    el?.scrollTo({ left: TABS.indexOf(t) * el.clientWidth, behavior: 'smooth' })
   }
+
+  // Open on To-do. Jumps rather than scrolls, and before paint, so the first frame is
+  // already the right page — a smooth scroll here would look like a glitch on load.
+  useLayoutEffect(() => {
+    const el = pager.current
+    if (el) el.scrollLeft = TABS.indexOf('To-do') * el.clientWidth
+  }, [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -129,43 +134,57 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion="user" transition={SPRING}>
-      <div className="min-h-dvh bg-[var(--bg)]">
-        <div
-          className="mx-auto max-w-2xl px-3 pb-32 sm:px-6"
-          onTouchStart={onTouchStart}
-          onTouchEnd={onTouchEnd}
-        >
-          <div className="sticky top-0 z-20 bg-[var(--bg)] pt-4 pb-2">
-            <div className="flex items-center justify-between pb-3">
-              <div className="flex gap-1">
-                {TABS.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTab(t)}
-                    className="rounded-full px-3 py-1.5 text-[14px] font-semibold tracking-tight transition-colors"
-                    style={
-                      tab === t
-                        ? { background: 'var(--card-2)', color: 'var(--text)' }
-                        : { color: 'var(--muted)' }
-                    }
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-              <ThemeToggle resolved={theme.resolved} cycle={theme.cycle} />
+      {/* Column: a fixed header over a pager that owns all the scrolling. The pager has to
+          be a real height for its pages to scroll on their own, hence h-dvh + min-h-0. */}
+      <div className="flex h-dvh flex-col bg-[var(--bg)]">
+        <div className="mx-auto w-full max-w-2xl shrink-0 px-3 pt-4 pb-2 sm:px-6">
+          <div className="flex items-center justify-between pb-3">
+            <div className="flex gap-1">
+              {TABS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => goTo(t)}
+                  className="rounded-full px-3 py-1.5 text-[14px] font-semibold tracking-tight transition-colors"
+                  style={
+                    tab === t
+                      ? { background: 'var(--card-2)', color: 'var(--text)' }
+                      : { color: 'var(--muted)' }
+                  }
+                >
+                  {t}
+                </button>
+              ))}
             </div>
+            <ThemeToggle resolved={theme.resolved} cycle={theme.cycle} />
           </div>
-
           <ConflictBars sync={sync} />
+        </div>
 
-          {tab === 'Buy' && (
-            <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
-          )}
-          {tab === 'To-do' && <TodoView todos={todos} setTodos={setTodos} />}
-          {tab === 'Spending' && (
-            <SpendView items={items} payments={payments} setPayments={setPayments} />
-          )}
+        {/* Native scroll-snap does the paging: the page tracks the finger, keeps its
+            throw velocity and snaps, all without a line of animation code. It also
+            fixes swipes on inner scrollers (the tag chip row) for free — nested
+            scroll containers consume their own gesture instead of paging the parent. */}
+        <div
+          ref={pager}
+          onScroll={onScroll}
+          className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {TABS.map((t) => (
+            <section
+              key={t}
+              className="w-full shrink-0 snap-start overflow-y-auto overscroll-y-contain"
+            >
+              <div className="mx-auto max-w-2xl px-3 pb-32 sm:px-6">
+                {t === 'Buy' && (
+                  <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
+                )}
+                {t === 'To-do' && <TodoView todos={todos} setTodos={setTodos} />}
+                {t === 'Spending' && (
+                  <SpendView items={items} payments={payments} setPayments={setPayments} />
+                )}
+              </div>
+            </section>
+          ))}
         </div>
 
         <AnimatePresence>
@@ -398,7 +417,9 @@ function BuyView({
         </p>
       ) : (
         <>
-          <div className="-mx-3 flex gap-2 overflow-x-auto px-3 pt-3 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
+          {/* overscroll-x-contain: without it, scrolling this row to its end chains the
+              rest of the gesture to the pager and flips the page. */}
+          <div className="-mx-3 flex gap-2 overflow-x-auto overscroll-x-contain px-3 pt-3 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
             {KINDS.map((k) => (
               <button
                 key={k}
