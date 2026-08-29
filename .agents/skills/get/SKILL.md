@@ -13,7 +13,7 @@ Bring this machine up to date with GitHub. Follow these steps in order.
    Do not resolve them unilaterally.
 4. Run `npm install` - dependencies may have changed since they last worked here.
 5. Run `npm test` and `npx tsc --noEmit`. Report the results.
-   Expect 14 passing tests and a clean typecheck.
+   Expect 38 passing tests and a clean typecheck.
 6. Start the dev server and give the localhost URL.
 
 **Hard rules**

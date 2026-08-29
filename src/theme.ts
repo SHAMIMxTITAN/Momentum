@@ -40,8 +40,11 @@ export function useTheme() {
       ?.setAttribute('content', resolved === 'dark' ? '#000000' : '#FFFFFF')
   }, [resolved])
 
-  const cycle = () =>
-    setChoice((c) => THEMES[(THEMES.indexOf(c) + 1) % THEMES.length])
+  // Toggles against what is *on screen*, not against `choice`: cycling through 'system'
+  // renders identically to whichever of light/dark the OS already is, so a third of the
+  // old three-way cycle was a no-op that read as "the button needs two clicks".
+  // 'system' stays the stored default on a fresh install, it just is not a cycle stop.
+  const cycle = () => setChoice(resolved === 'dark' ? 'light' : 'dark')
 
   return { choice, resolved, setChoice, cycle }
 }

@@ -8,7 +8,7 @@ session; this file is the context for continuing it.
 ```bash
 npm run dev          # vite, port 5173, binds to LAN
 npm run build        # -> dist/, relative paths, static deploy anywhere
-npm test             # node --test src/store.test.ts  (14 tests, all passing)
+npm test             # node --test src/store.test.ts  (38 tests, all passing)
 npx tsc --noEmit     # typecheck
 ```
 
@@ -113,7 +113,7 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
 
 Minimal, flat: **no borders, no shadows heavier than `shadow-sm`, no gradients, no
 glassmorphism**. System font stack. Kind pills are **solid filled, white text**: Need `#007AFF`,
-Both `#30B0C7`, Want `#AF52DE`; the free tag is a quiet neutral pill beside it. Urgency headers 20px semibold:
+Both `#30B0C7`, Want `#AF52DE`; the free tag is a quiet neutral pill beside it. Urgency headers are quiet 12px uppercase `--muted` labels with a 6px colour dot (they were 20px semibold in the accent colour until 2026-08-29 — four saturated headers over mostly-empty sections read as loud, not premium). The dot keeps the signal:
 Now `#FF3B30`, Soon `#FF9500`, Later `#8E8E93`, Maybe `#5E5CE6`. Springy ~200ms motion, respect
 `prefers-reduced-motion`. No sidebars, no logo header.
 

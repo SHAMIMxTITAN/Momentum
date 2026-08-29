@@ -17,7 +17,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import { Check, ChevronRight, GripVertical, Monitor, Moon, Sun, Star, X } from 'lucide-react'
+import { Check, ChevronRight, GripVertical, Moon, Sun, Star, X } from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
@@ -30,6 +30,7 @@ import {
   groupPayments,
   monthlySpend,
   reorderVisible,
+  swipeTab,
   rowId,
   safeUrl,
   useBudget,
@@ -44,7 +45,7 @@ import {
   type Urgency,
   type When,
 } from './store'
-import { useTheme, type ThemeChoice } from './theme'
+import { useTheme } from './theme'
 import { useGitHubSync, validRepo, type Status, type SyncConfig } from './github'
 
 const KIND_COLOR: Record<Kind, string> = {
@@ -85,8 +86,27 @@ export default function App() {
   const { todos, setTodos } = useTodos()
   const { payments, setPayments } = usePayments()
   const theme = useTheme()
-  const [tab, setTab] = useState<Tab>('Buy')
+  // To-do opens first: it is the tab with something to do *today*. It also sits in the
+  // middle, so the first swipe works in either direction.
+  const [tab, setTab] = useState<Tab>('To-do')
   const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
+
+  // Swipe left/right to change tab. Touch only, and only on a clearly horizontal
+  // gesture — dnd-kit owns dragging, but its listeners are on the grip handle alone,
+  // so a swipe anywhere else on a row cannot start one.
+  const swipeFrom = useRef<{ x: number; y: number } | null>(null)
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0]
+    swipeFrom.current = { x: t.clientX, y: t.clientY }
+  }
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const from = swipeFrom.current
+    swipeFrom.current = null
+    if (!from) return
+    const t = e.changedTouches[0]
+    const next = swipeTab(TABS, tab, t.clientX - from.x, t.clientY - from.y)
+    if (next) setTab(next)
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -110,7 +130,11 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user" transition={SPRING}>
       <div className="min-h-dvh bg-[var(--bg)]">
-        <div className="mx-auto max-w-2xl px-3 pb-32 sm:px-6">
+        <div
+          className="mx-auto max-w-2xl px-3 pb-32 sm:px-6"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
           <div className="sticky top-0 z-20 bg-[var(--bg)] pt-4 pb-2">
             <div className="flex items-center justify-between pb-3">
               <div className="flex gap-1">
@@ -129,7 +153,7 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <ThemeToggle choice={theme.choice} cycle={theme.cycle} />
+              <ThemeToggle resolved={theme.resolved} cycle={theme.cycle} />
             </div>
           </div>
 
@@ -169,13 +193,13 @@ export default function App() {
   )
 }
 
-function ThemeToggle({ choice, cycle }: { choice: ThemeChoice; cycle: () => void }) {
-  const Icon = choice === 'system' ? Monitor : choice === 'dark' ? Moon : Sun
+function ThemeToggle({ resolved, cycle }: { resolved: 'light' | 'dark'; cycle: () => void }) {
+  const Icon = resolved === 'dark' ? Moon : Sun
   return (
     <button
       onClick={cycle}
-      aria-label={`Theme: ${choice}. Tap to change.`}
-      title={`Theme: ${choice}`}
+      aria-label={`${resolved} mode. Tap to switch.`}
+      title={`${resolved} mode`}
       className="grid size-9 place-items-center rounded-full bg-[var(--card)] text-[var(--muted)] transition-colors hover:text-[var(--text)]"
     >
       <Icon size={16} />
@@ -424,18 +448,19 @@ function BuyView({
                 {rows.map((r) =>
                   r.kind === 'header' ? (
                     <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
-                      <h2
-                        className="px-1 pt-5 pb-2 text-[20px] font-semibold tracking-tight"
-                        style={{ color: URGENCY_COLOR[r.section as Urgency] }}
-                      >
+                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[12px] font-semibold tracking-[0.08em] text-[var(--muted)] uppercase">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full"
+                          style={{ background: URGENCY_COLOR[r.section as Urgency] }}
+                        />
                         {r.section}
                       </h2>
                     </Slot>
                   ) : r.kind === 'ghost' ? (
                     <Slot key={rowId(r)} id={rowId(r)} droppable>
-                      <p className="rounded-2xl bg-[var(--card)] px-4 py-3 text-[14px] text-[var(--ghost)]">
-                        Nothing here
-                      </p>
+                      {/* Still a sortable member — that is what lets a drag land in an
+                          empty section — just no longer a full card of nothing. */}
+                      <p className="px-1 py-2 text-[13px] text-[var(--ghost)]">Nothing here</p>
                     </Slot>
                   ) : (
                     <ItemRow
