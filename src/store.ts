@@ -40,6 +40,12 @@ export type Todo = {
    * one ordered list.
    */
   daily?: boolean
+  /**
+   * The day the task landed in its current bucket. Today never re-anchors itself, so an
+   * undone one-off just sits there — this is what lets it say it has been sitting since
+   * an earlier day instead of looking freshly added.
+   */
+  since?: string
 }
 
 /**
@@ -150,6 +156,7 @@ export function parseTodos(raw: unknown): Todo[] {
         doneAt: typeof o.doneAt === 'string' ? o.doneAt : undefined,
         important: o.important === true ? true : undefined,
         daily: o.daily === true ? true : undefined,
+        since: typeof o.since === 'string' ? o.since : undefined,
       },
     ]
   })
@@ -320,6 +327,37 @@ export function isDone(t: Todo, now: Date = new Date()): boolean {
   if (!t.daily) return t.done
   if (!t.done || !t.doneAt) return false
   return new Date(t.doneAt).toDateString() === now.toDateString()
+}
+
+const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+
+/**
+ * A one-off still open in Today that arrived on an earlier day — it rolled over rather than
+ * being done. Dailies are exempt: coming back every morning is the point, not a failure.
+ */
+export function isOverdue(t: Todo, now: Date = new Date()): boolean {
+  if (t.daily || t.done || t.when !== 'Today' || !t.since) return false
+  return dayStart(new Date(t.since)) < dayStart(now)
+}
+
+/**
+ * Finished one-offs bucketed by the calendar day they were ticked, newest day first. A daily
+ * never lands here — it stays in Today and turns green, so the log reads as "what I got done
+ * on this date" rather than the same six chores repeated forever.
+ */
+export function doneByDay(todos: Todo[]): { day: string; todos: Todo[] }[] {
+  const groups = new Map<string, Todo[]>()
+  for (const t of todos) {
+    if (t.daily || !t.done) continue
+    const day = t.doneAt ? new Date(t.doneAt).toDateString() : ''
+    const list = groups.get(day)
+    if (list) list.push(t)
+    else groups.set(day, [t])
+  }
+  // Undated ones parse to NaN, so `|| 0` sinks them to the bottom instead of scrambling the sort.
+  return [...groups]
+    .sort((a, b) => (Date.parse(b[0]) || 0) - (Date.parse(a[0]) || 0))
+    .map(([day, todos]) => ({ day, todos }))
 }
 
 export function glimpse(todos: Todo[], when: When): { top: Todo | null; more: number } {

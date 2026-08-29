@@ -25,8 +25,10 @@ import {
   applyItemDrag,
   buildItemRows,
   cleanTag,
+  doneByDay,
   fillRatio,
   glimpse,
+  isOverdue,
   groupPayments,
   monthlySpend,
   isDone,
@@ -967,6 +969,16 @@ function BoughtRow({
 
 /* -------------------------------------------------------------- To-do view */
 
+/** Date-heading for the done log: the two days you actually recognise, then a real date. */
+function dayLabel(day: string): string {
+  if (!day) return 'Earlier'
+  const d = new Date(day)
+  const days = Math.round((Date.parse(new Date().toDateString()) - Date.parse(day)) / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+}
+
 function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) => void }) {
   const [title, setTitle] = useState('')
   const [day, setDay] = useState<When>('Today')
@@ -980,8 +992,9 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   )
 
   const openOn = (w: When) => todos.filter((t) => !isDone(t) && t.when === w)
-  const shown = openOn(day)
-  const done = todos.filter((t) => isDone(t))
+  // A ticked daily stays on the list and just turns green; only one-offs leave for the log.
+  const shown = todos.filter((t) => t.when === day && (t.daily || !isDone(t)))
+  const doneDays = doneByDay(todos)
 
   // Peek at the next bucket along, so tomorrow can warn you without taking the screen.
   const nextDay = WHENS[(WHENS.indexOf(day) + 1) % WHENS.length]
@@ -998,6 +1011,7 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
         when: asDaily ? 'Today' : day,
         done: false,
         daily: asDaily || undefined,
+        since: new Date().toISOString(),
       },
     ])
     setTitle('')
@@ -1006,13 +1020,18 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const patch = (id: string, next: Partial<Todo>) =>
     setTodos(todos.map((x) => (x.id === id ? { ...x, ...next } : x)))
 
+  // Keyed off isDone, not `done`: a daily ticked yesterday reads as open today, and a plain
+  // `!t.done` would flip it back to false and leave the tap doing nothing.
   const toggle = (t: Todo) =>
-    patch(t.id, { done: !t.done, doneAt: t.done ? undefined : new Date().toISOString() })
+    patch(t.id, isDone(t) ? { done: false, doneAt: undefined } : { done: true, doneAt: new Date().toISOString() })
 
   // A standing task has no "next day" to be pushed to — it belongs to every one.
   const moveOn = (t: Todo) => {
     if (t.daily) return
-    patch(t.id, { when: WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length] })
+    patch(t.id, {
+      when: WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length],
+      since: new Date().toISOString(),
+    })
   }
 
   const remove = (t: Todo) => setTodos(todos.filter((x) => x.id !== t.id))
@@ -1143,13 +1162,13 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
         </button>
       )}
 
-      {done.length > 0 && (
+      {doneDays.length > 0 && (
         <div className="pt-8">
           <button
             onClick={() => setShowDone((s) => !s)}
             className="px-1 text-[15px] font-semibold tracking-tight text-[var(--muted)]"
           >
-            Done · {done.length}
+            Done · {doneDays.reduce((n, d) => n + d.todos.length, 0)}
             <span
               className="ml-1.5 inline-block transition-transform"
               style={{ transform: showDone ? 'rotate(90deg)' : 'none' }}
@@ -1157,34 +1176,40 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
               ›
             </span>
           </button>
-          {showDone && (
-            <div className="space-y-2.5 pt-3">
-              {done.map((t) => (
-                <div
-                  key={t.id}
-                  className="flex items-center gap-3 rounded-2xl bg-[var(--card)] px-4 py-3"
-                >
-                  <button
-                    onClick={() => toggle(t)}
-                    aria-label={`Mark ${t.title} not done`}
-                    className="grid size-6 shrink-0 place-items-center rounded-full bg-[#34C759] text-white"
-                  >
-                    <Check size={14} strokeWidth={3} />
-                  </button>
-                  <span className="min-w-0 flex-1 truncate text-[16px] text-[var(--muted)] line-through">
-                    {t.title}
-                  </span>
-                  <button
-                    onClick={() => remove(t)}
-                    aria-label={`Delete ${t.title}`}
-                    className="shrink-0 p-1 text-[var(--faint)] hover:text-[#FF3B30]"
-                  >
-                    <X size={16} />
-                  </button>
+          {showDone &&
+            doneDays.map(({ day, todos: sameDay }) => (
+              <div key={day || 'undated'} className="pt-4">
+                <p className="px-1 pb-2 text-[13px] font-semibold tracking-tight text-[var(--faint)]">
+                  {dayLabel(day)}
+                </p>
+                <div className="space-y-2.5">
+                  {sameDay.map((t) => (
+                    <div
+                      key={t.id}
+                      className="flex items-center gap-3 rounded-2xl bg-[var(--card)] px-4 py-3"
+                    >
+                      <button
+                        onClick={() => toggle(t)}
+                        aria-label={`Mark ${t.title} not done`}
+                        className="grid size-6 shrink-0 place-items-center rounded-full bg-[#34C759] text-white"
+                      >
+                        <Check size={14} strokeWidth={3} />
+                      </button>
+                      <span className="min-w-0 flex-1 truncate text-[16px] text-[var(--muted)] line-through">
+                        {t.title}
+                      </span>
+                      <button
+                        onClick={() => remove(t)}
+                        aria-label={`Delete ${t.title}`}
+                        className="shrink-0 p-1 text-[var(--faint)] hover:text-[#FF3B30]"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            ))}
         </div>
       )}
     </>
@@ -1217,6 +1242,12 @@ function TodoRow({
     useSortable({ id: todo.id })
   const [draft, setDraft] = useState(todo.title)
 
+  const done = isDone(todo)
+  const overdue = isOverdue(todo)
+  // Indigo says "this one repeats", green says "and it's handled for today". A one-off has
+  // no accent at all, so the standing tasks stay picked out of the list at a glance.
+  const accent = todo.daily ? (done ? '#34C759' : '#5E5CE6') : undefined
+
   const save = () => {
     const next = draft.trim()
     if (next) rename(todo.id, next)
@@ -1237,7 +1268,13 @@ function TodoRow({
       <motion.div
         exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
         className="mb-2.5 flex items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
-        style={isDragging ? { background: 'var(--card-2)' } : undefined}
+        style={
+          isDragging
+            ? { background: 'var(--card-2)' }
+            : done
+              ? { background: '#34C75914' }
+              : undefined
+        }
       >
         <button
           ref={setActivatorNodeRef}
@@ -1252,9 +1289,16 @@ function TodoRow({
 
         <button
           onClick={onToggle}
-          aria-label={`Mark ${todo.title} done`}
-          className={`${TAP} size-6 shrink-0 rounded-full border-2 border-[var(--faint)] transition-colors hover:border-[var(--muted)]`}
-        />
+          aria-label={done ? `Mark ${todo.title} not done` : `Mark ${todo.title} done`}
+          className={`${TAP} grid size-6 shrink-0 place-items-center rounded-full border-2 transition-colors`}
+          style={
+            done
+              ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
+              : { borderColor: accent ?? 'var(--faint)' }
+          }
+        >
+          {done && <Check size={14} strokeWidth={3} />}
+        </button>
 
         {editing ? (
           <input
@@ -1281,10 +1325,15 @@ function TodoRow({
           >
             {/* Marker, not a control — turning it off lives in the editor, so the row
                 never grows a sixth button just to say "this one repeats". */}
-            {todo.daily && (
-              <Repeat size={12} className="shrink-0 text-[var(--faint)]" aria-label="Daily" />
+            {todo.daily && <Repeat size={12} className="shrink-0" style={{ color: accent }} aria-label="Daily" />}
+            {overdue && (
+              <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/12">
+                Due
+              </span>
             )}
-            <span className="min-w-0">{todo.title}</span>
+            <span className="min-w-0" style={done ? { color: 'var(--muted)' } : undefined}>
+              {todo.title}
+            </span>
           </button>
         )}
 

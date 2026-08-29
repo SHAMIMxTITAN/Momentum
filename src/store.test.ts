@@ -8,6 +8,8 @@ import {
   buildItemRows,
   importance,
   isDone,
+  isOverdue,
+  doneByDay,
   cleanTag,
   fillRatio,
   monthlySpend,
@@ -444,4 +446,42 @@ test('parseTodos pins a daily to Today and drops a non-true daily flag', () => {
   const [b] = parseTodos([{ title: 'Once', when: 'Tomorrow', daily: 'yes' }])
   assert.equal(b.when, 'Tomorrow')
   assert.equal(b.daily, undefined)
+})
+
+test('isOverdue flags a one-off left in Today since an earlier day', () => {
+  const now = new Date('2026-08-29T09:00:00')
+  const base = { id: 'x', title: 'Pay bill', when: 'Today' as const, done: false }
+
+  // sat there since yesterday -> due
+  assert.equal(isOverdue({ ...base, since: '2026-08-28T20:00:00' }, now), true)
+  // added today -> not due yet, however early
+  assert.equal(isOverdue({ ...base, since: '2026-08-29T00:05:00' }, now), false)
+  // a daily is meant to come back; never due
+  assert.equal(isOverdue({ ...base, daily: true, since: '2026-08-01T00:00:00' }, now), false)
+  // already done, or parked in another bucket
+  assert.equal(isOverdue({ ...base, done: true, since: '2026-08-01T00:00:00' }, now), false)
+  assert.equal(isOverdue({ ...base, when: 'Tomorrow', since: '2026-08-01T00:00:00' }, now), false)
+  // nothing to compare against
+  assert.equal(isOverdue(base, now), false)
+})
+
+test('doneByDay groups finished one-offs newest first and leaves dailies out', () => {
+  const t = (id: string, doneAt?: string, daily?: true) => ({
+    id, title: id, when: 'Today' as const, done: true, doneAt, daily,
+  })
+  const groups = doneByDay([
+    t('old', '2026-08-27T10:00:00'),
+    t('new', '2026-08-29T10:00:00'),
+    t('newer', '2026-08-29T18:00:00'),
+    t('namaz', '2026-08-29T05:00:00', true),
+    t('undated'),
+    { id: 'open', title: 'open', when: 'Today' as const, done: false },
+  ])
+
+  assert.deepEqual(
+    groups.map((g) => g.todos.map((x) => x.id)),
+    [['new', 'newer'], ['old'], ['undated']],
+  )
+  // the daily never enters the log, and neither does anything still open
+  assert.equal(groups.flatMap((g) => g.todos).some((x) => x.id === 'namaz' || x.id === 'open'), false)
 })
