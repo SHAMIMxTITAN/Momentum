@@ -18,57 +18,92 @@
           document.documentElement.classList.add('dark')
         if (navigator.standalone) document.documentElement.classList.add('standalone')
       } catch (e) {}
+      // The splash measures the viewport rather than trusting `inset: 0`. In an iOS
+      // standalone launch a fixed box is not always laid out against the glass, which
+      // parks the mark half a status bar below centre; innerHeight is the one number that
+      // agrees with where `top: 0` actually lands, on any phone.
+      var setH = function () {
+        // A hidden or prerendered webview reports 0; fall through to the 100dvh default
+        // rather than pinning the overlay to no height at all.
+        if (window.innerHeight)
+          document.documentElement.style.setProperty('--vh', window.innerHeight + 'px')
+      }
+      setH()
+      addEventListener('resize', setH)
+      addEventListener('orientationchange', setH)
     </script>
     <style>
-      /* Launch animation. Lives here rather than in React so it is on screen from the first
-         frame of a cold start - mounted after the bundle parsed, it would read as a loading
-         spinner instead of an opening. Desktop never sees it: an app you keep in a window
-         does not want a title card every time you glance at it. */
+      /* Launch animation: the three bars fly in off the screen edges - left, right, left -
+         and glide into the stack the icon is made of. Lives here rather than in React so it
+         is on screen from the first frame of a cold start; mounted after the bundle parsed
+         it would read as a loading spinner instead of an opening. Desktop never sees it -
+         an app you keep in a window does not want a title card every time you glance at
+         it. */
       #splash {
         display: none;
         position: fixed;
-        inset: 0;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100vh;
+        height: var(--vh, 100dvh);
         z-index: 100;
-        place-items: center;
+        align-items: center;
+        justify-content: center;
         pointer-events: none;
         background: #fff;
+        animation: splash-out 300ms cubic-bezier(0.4, 0, 1, 1) 1010ms forwards;
       }
       html.dark #splash { background: #000; }
 
       @media (display-mode: standalone) and (max-width: 767px) {
-        #splash { display: grid; }
+        #splash { display: flex; }
       }
-      html.standalone #splash { display: grid; }
+      html.standalone #splash { display: flex; }
       @media (min-width: 768px) {
         html.standalone #splash { display: none; }
       }
 
-      #splash rect {
-        transform: scaleX(0);
-        transform-box: fill-box;
-        transform-origin: left center;
-        /* easeOutQuint: quick off the mark, long settle - the shape of a physical release. */
-        animation: splash-bar 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      /* display:block kills the inline-baseline gap that would sit the mark off centre. */
+      #splash svg {
+        display: block;
+        width: min(46vw, 220px);
+        height: auto;
+        /* The bars start well outside the mark's own box; without this the viewBox would
+           clip them and they would appear out of thin air instead of flying in. */
+        overflow: visible;
+        animation: splash-zoom 300ms cubic-bezier(0.4, 0, 1, 1) 1010ms forwards;
       }
-      #splash rect:nth-child(1) { animation-delay: 80ms; }
-      #splash rect:nth-child(2) { animation-delay: 170ms; }
-      #splash rect:nth-child(3) { animation-delay: 260ms; }
+
+      #splash rect {
+        transform-box: fill-box;
+        /* Measured, not picked by feel: most of the travel happens off-screen, so a plain
+           ease-out spends its fast phase where nobody can see it and only the dead tail
+           lands in frame - which is what read as mushy. This curve winds up slowly out of
+           frame and crosses the edge about a third in, putting the whole deceleration on
+           screen. No rotation and no bounce - both read as fidget at this size. */
+        animation: 660ms cubic-bezier(0.45, 0, 0.2, 1) both;
+      }
+      #splash rect:nth-child(1) { animation-name: fly-left; }
+      #splash rect:nth-child(2) { animation-name: fly-right; animation-delay: 95ms; }
+      #splash rect:nth-child(3) { animation-name: fly-left; animation-delay: 190ms; }
+
+      /* Alternating sides, so the eye is handed left-right-left down the stack as it builds.
+         The travel is in viewBox units and far wider than the mark, which clears the edge of
+         any phone; they are on screen the whole time, so there is no fade to soften it. */
+      @keyframes fly-left {
+        from { transform: translateX(-1200px); }
+        to { transform: translateX(0); }
+      }
+      @keyframes fly-right {
+        from { transform: translateX(1200px); }
+        to { transform: translateX(0); }
+      }
 
       /* The mark pushes toward you as the ground drops away, so the app is arriving rather
          than the splash merely leaving. */
-      #splash svg { animation: splash-zoom 320ms cubic-bezier(0.4, 0, 1, 1) 760ms forwards; }
-      #splash { animation: splash-out 320ms cubic-bezier(0.4, 0, 1, 1) 760ms forwards; }
-
-      @keyframes splash-bar {
-        from { transform: scaleX(0); opacity: 0; }
-        to { transform: scaleX(1); opacity: 1; }
-      }
-      @keyframes splash-zoom {
-        to { transform: scale(1.12); opacity: 0; }
-      }
-      @keyframes splash-out {
-        to { opacity: 0; visibility: hidden; }
-      }
+      @keyframes splash-zoom { to { transform: scale(1.12); opacity: 0; } }
+      @keyframes splash-out { to { opacity: 0; visibility: hidden; } }
 
       @media (prefers-reduced-motion: reduce) {
         #splash { display: none !important; }
@@ -77,7 +112,7 @@
   </head>
   <body>
     <div id="splash" aria-hidden="true">
-      <svg viewBox="0 0 512 512" width="104" height="104">
+      <svg viewBox="0 0 512 512">
         <rect x="112.6" y="129.3" width="286.7" height="58.9" rx="29.4" fill="#FF3B30" />
         <rect x="112.6" y="226.6" width="225.3" height="58.9" rx="29.4" fill="#FF9500" />
         <rect x="112.6" y="323.8" width="153.6" height="58.9" rx="29.4" fill="#C7C7CC" />
