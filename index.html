@@ -8,8 +8,81 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
     <title>Momentum</title>
+    <script>
+      // Before first paint, so neither the splash nor the app flashes the wrong ground.
+      // navigator.standalone is the only signal iOS gives for an Add-to-Home-Screen launch;
+      // the display-mode query below covers everyone else.
+      try {
+        var t = localStorage.getItem('buy-next.theme')
+        if (t === 'dark' || ((!t || t === 'system') && matchMedia('(prefers-color-scheme: dark)').matches))
+          document.documentElement.classList.add('dark')
+        if (navigator.standalone) document.documentElement.classList.add('standalone')
+      } catch (e) {}
+    </script>
+    <style>
+      /* Launch animation. Lives here rather than in React so it is on screen from the first
+         frame of a cold start - mounted after the bundle parsed, it would read as a loading
+         spinner instead of an opening. Desktop never sees it: an app you keep in a window
+         does not want a title card every time you glance at it. */
+      #splash {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        place-items: center;
+        pointer-events: none;
+        background: #fff;
+      }
+      html.dark #splash { background: #000; }
+
+      @media (display-mode: standalone) and (max-width: 767px) {
+        #splash { display: grid; }
+      }
+      html.standalone #splash { display: grid; }
+      @media (min-width: 768px) {
+        html.standalone #splash { display: none; }
+      }
+
+      #splash rect {
+        transform: scaleX(0);
+        transform-box: fill-box;
+        transform-origin: left center;
+        /* easeOutQuint: quick off the mark, long settle - the shape of a physical release. */
+        animation: splash-bar 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      #splash rect:nth-child(1) { animation-delay: 80ms; }
+      #splash rect:nth-child(2) { animation-delay: 170ms; }
+      #splash rect:nth-child(3) { animation-delay: 260ms; }
+
+      /* The mark pushes toward you as the ground drops away, so the app is arriving rather
+         than the splash merely leaving. */
+      #splash svg { animation: splash-zoom 320ms cubic-bezier(0.4, 0, 1, 1) 760ms forwards; }
+      #splash { animation: splash-out 320ms cubic-bezier(0.4, 0, 1, 1) 760ms forwards; }
+
+      @keyframes splash-bar {
+        from { transform: scaleX(0); opacity: 0; }
+        to { transform: scaleX(1); opacity: 1; }
+      }
+      @keyframes splash-zoom {
+        to { transform: scale(1.12); opacity: 0; }
+      }
+      @keyframes splash-out {
+        to { opacity: 0; visibility: hidden; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #splash { display: none !important; }
+      }
+    </style>
   </head>
   <body>
+    <div id="splash" aria-hidden="true">
+      <svg viewBox="0 0 512 512" width="104" height="104">
+        <rect x="112.6" y="129.3" width="286.7" height="58.9" rx="29.4" fill="#FF3B30" />
+        <rect x="112.6" y="226.6" width="225.3" height="58.9" rx="29.4" fill="#FF9500" />
+        <rect x="112.6" y="323.8" width="153.6" height="58.9" rx="29.4" fill="#C7C7CC" />
+      </svg>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
