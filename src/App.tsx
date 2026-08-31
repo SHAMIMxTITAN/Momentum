@@ -17,13 +17,25 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import { Check, ChevronRight, GripVertical, Moon, Repeat, Sun, Star, X } from 'lucide-react'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
+  Moon,
+  Repeat,
+  Sun,
+  Star,
+  X,
+} from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
   WHENS,
   applyItemDrag,
   buildItemRows,
+  buildRows,
+  applyDrag,
   cleanTag,
   doneByDay,
   fillRatio,
@@ -32,6 +44,12 @@ import {
   groupPayments,
   monthlySpend,
   isDone,
+  SCRIPT_STATUSES,
+  emptyBlock,
+  wordCount,
+  readingMinutes,
+  relativeTime,
+  useScripts,
   DAILY_COLORS,
   DEFAULT_DAILY_COLOR,
   reorderVisible,
@@ -42,11 +60,18 @@ import {
   usePayments,
   useTodos,
   parseItems,
+  parseTodos,
+  parsePayments,
+  parseScripts,
   type Item,
   type Kind,
   type Payment,
   type Todo,
   type Urgency,
+  type Script,
+  type ScriptStatus,
+  type Block,
+  type BlockType,
   type When,
 } from './store'
 import { useTheme } from './theme'
@@ -88,18 +113,31 @@ const money = (n: number) => `₹${inr.format(n)}`
 const FIELD =
   'rounded-lg bg-[var(--field)] px-2.5 py-1.5 text-[14px] tracking-tight outline-none'
 
-type Tab = 'Buy' | 'To-do' | 'Spending'
-const TABS: Tab[] = ['Buy', 'To-do', 'Spending']
+type Tab = 'Buy' | 'To-do' | 'Spending' | 'Scripts'
+const TABS: Tab[] = ['Buy', 'To-do', 'Spending', 'Scripts']
 
 export default function App() {
   const { items, commit, replaceAll, undo, toast, setToast } = useItems()
   const { todos, setTodos } = useTodos()
   const { payments, setPayments } = usePayments()
+  const { scripts, setScripts } = useScripts()
+  // Lifted out of ScriptsView because the pager has to know: a swipe inside the editor
+  // would fight text selection, so paging is switched off while a script is open.
+  const [openScript, setOpenScript] = useState<string | null>(null)
   const theme = useTheme()
   // To-do opens first: it is the tab with something to do *today*. It also sits in the
   // middle, so the first swipe works in either direction.
   const [tab, setTab] = useState<Tab>('To-do')
-  const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
+  const sync = useGitHubSync(
+    items,
+    replaceAll,
+    todos,
+    setTodos,
+    payments,
+    setPayments,
+    scripts,
+    setScripts,
+  )
 
   const pager = useRef<HTMLDivElement>(null)
 
@@ -143,6 +181,63 @@ export default function App() {
     return () => clearTimeout(t)
   }, [toast, setToast])
 
+  // Export used to be a bare array of items. It is now the whole app, because scripts are
+  // too much work to lose to a half-backup.
+  const exportJson = () => {
+    const dump = { version: 2, items, todos, payments, scripts }
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' }),
+    )
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `momentum-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /**
+   * Reads both shapes: the old bare array (items only) and the object. A key that is
+   * absent leaves that list alone rather than emptying it — importing a pre-Scripts
+   * backup must not wipe the scripts it predates.
+   */
+  const importJson = async (file: File) => {
+    try {
+      const raw: unknown = JSON.parse(await file.text())
+      if (Array.isArray(raw)) {
+        const parsed = parseItems(raw)
+        if (!parsed.length) return setToast('Nothing usable in that file')
+        replaceAll(parsed)
+        return setToast(`Imported ${parsed.length} items`)
+      }
+      if (!raw || typeof raw !== 'object') return setToast('Nothing usable in that file')
+      const o = raw as Record<string, unknown>
+      const counts: string[] = []
+      if ('items' in o) {
+        const v = parseItems(o.items)
+        replaceAll(v)
+        counts.push(`${v.length} items`)
+      }
+      if ('todos' in o) {
+        const v = parseTodos(o.todos)
+        setTodos(v)
+        counts.push(`${v.length} tasks`)
+      }
+      if ('payments' in o) {
+        const v = parsePayments(o.payments)
+        setPayments(v)
+        counts.push(`${v.length} payments`)
+      }
+      if ('scripts' in o) {
+        const v = parseScripts(o.scripts)
+        setScripts(v)
+        counts.push(`${v.length} scripts`)
+      }
+      setToast(counts.length ? `Imported ${counts.join(', ')}` : 'Nothing usable in that file')
+    } catch {
+      setToast(`Couldn't read that file`)
+    }
+  }
+
   return (
     <MotionConfig reducedMotion="user" transition={SPRING}>
       {/* Column: a fixed header over a pager that owns all the scrolling. The pager has to
@@ -178,7 +273,10 @@ export default function App() {
         <div
           ref={pager}
           onScroll={onScroll}
-          className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className={`flex min-h-0 flex-1 overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+            // Paging off inside the editor: a horizontal swipe there is a text selection.
+            openScript ? 'overflow-x-hidden' : 'snap-x snap-mandatory overflow-x-auto'
+          }`}
         >
           {TABS.map((t) => (
             <section
@@ -187,11 +285,27 @@ export default function App() {
             >
               <div className="mx-auto max-w-2xl px-3 pb-32 sm:px-6">
                 {t === 'Buy' && (
-                  <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
+                  <BuyView
+                    items={items}
+                    commit={commit}
+                    replaceAll={replaceAll}
+                    setToast={setToast}
+                    sync={sync}
+                    onExport={exportJson}
+                    onImport={importJson}
+                  />
                 )}
                 {t === 'To-do' && <TodoView todos={todos} setTodos={setTodos} />}
                 {t === 'Spending' && (
                   <SpendView items={items} payments={payments} setPayments={setPayments} />
+                )}
+                {t === 'Scripts' && (
+                  <ScriptsView
+                    scripts={scripts}
+                    setScripts={setScripts}
+                    openId={openScript}
+                    setOpenId={setOpenScript}
+                  />
                 )}
               </div>
             </section>
@@ -263,6 +377,13 @@ function ConflictBars({ sync }: { sync: Sync }) {
           resolve={sync.payments.resolve}
         />
       )}
+      {sync.scripts.conflict && (
+        <ConflictBar
+          what="scripts"
+          count={sync.scripts.conflict.items.length}
+          resolve={sync.scripts.resolve}
+        />
+      )}
     </>
   )
 }
@@ -310,12 +431,16 @@ function BuyView({
   replaceAll,
   setToast,
   sync,
+  onExport,
+  onImport,
 }: {
   items: Item[]
   commit: (next: Item[], undoLabel?: string) => void
   replaceAll: (items: Item[]) => void
   setToast: (t: string | null) => void
   sync: Sync
+  onExport: () => void
+  onImport: (file: File) => void
 }) {
   const [kindFilter, setKindFilter] = useState<Set<Kind>>(new Set())
   const [tagFilter, setTagFilter] = useState<Set<string>>(new Set())
@@ -389,27 +514,6 @@ function BuyView({
     const to = ids.indexOf(String(over.id))
     if (from < 0 || to < 0 || from === to) return
     commit(applyItemDrag(items, rows, from, to))
-  }
-
-  const exportJson = () => {
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' }),
-    )
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `momentum-${new Date().toISOString().slice(0, 10)}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  const importJson = async (file: File) => {
-    try {
-      const parsed = parseItems(JSON.parse(await file.text()))
-      if (!parsed.length) return setToast('Nothing usable in that file')
-      commit(parsed, `Imported ${parsed.length} items`)
-    } catch {
-      setToast(`Couldn't read that file`)
-    }
   }
 
   const toggle = <T,>(set: Set<T>, v: T) => {
@@ -564,7 +668,7 @@ function BuyView({
       )}
 
       <div className="flex flex-wrap items-center gap-4 px-1 pt-10 text-[13px] text-[var(--muted)]">
-        <button onClick={exportJson} className="hover:text-[#007AFF]">
+        <button onClick={onExport} className="hover:text-[#007AFF]">
           Export JSON
         </button>
         <button onClick={() => fileRef.current?.click()} className="hover:text-[#007AFF]">
@@ -581,7 +685,7 @@ function BuyView({
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0]
-            if (f) importJson(f)
+            if (f) onImport(f)
             e.target.value = ''
           }}
         />
@@ -1940,6 +2044,592 @@ function SyncPanel({
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------ Scripts view */
+
+const STATUS_COLOR: Record<ScriptStatus, string> = {
+  Idea: '#8E8E93',
+  Writing: '#FF9500',
+  Ready: '#007AFF',
+  Recorded: '#34C759',
+}
+
+/**
+ * Caret position as a plain character offset. `Selection` speaks in nodes; every edit
+ * here speaks in string offsets, so the two are converted at the boundary and nowhere
+ * else.
+ */
+function caretOffset(el: HTMLElement): number {
+  const sel = getSelection()
+  if (!sel || !sel.rangeCount) return 0
+  const range = sel.getRangeAt(0)
+  const probe = range.cloneRange()
+  probe.selectNodeContents(el)
+  probe.setEnd(range.endContainer, range.endOffset)
+  return probe.toString().length
+}
+
+function setCaret(el: HTMLElement, offset: number) {
+  const node = el.firstChild
+  const range = document.createRange()
+  if (node && node.nodeType === Node.TEXT_NODE) {
+    range.setStart(node, Math.min(offset, node.textContent?.length ?? 0))
+  } else {
+    range.setStart(el, 0)
+  }
+  range.collapse(true)
+  const sel = getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+}
+
+/** Typed at the very start of a block, these become the block type. */
+const BLOCK_SHORTCUTS: [RegExp, BlockType][] = [
+  [/^# $/, 'h1'],
+  [/^## $/, 'h2'],
+  [/^### $/, 'h3'],
+  [/^[-*] $/, 'bullet'],
+  [/^1\. $/, 'number'],
+  [/^\[[ x]?\] $/, 'todo'],
+  [/^> $/, 'quote'],
+  [/^```$/, 'code'],
+  [/^--- $/, 'divider'],
+]
+
+const LIST_TYPES: BlockType[] = ['bullet', 'number', 'todo']
+
+const BLOCK_CLASS: Record<BlockType, string> = {
+  p: 'text-[17px] leading-relaxed',
+  h1: 'text-[28px] font-semibold tracking-tight leading-snug',
+  h2: 'text-[22px] font-semibold tracking-tight leading-snug',
+  h3: 'text-[18px] font-semibold tracking-tight leading-snug',
+  bullet: 'text-[17px] leading-relaxed',
+  number: 'text-[17px] leading-relaxed',
+  todo: 'text-[17px] leading-relaxed',
+  quote: 'text-[17px] leading-relaxed text-[var(--muted)]',
+  code: 'text-[14px] leading-relaxed font-mono whitespace-pre-wrap',
+  divider: '',
+}
+
+/**
+ * One block, one contenteditable. React never owns the innerHTML: the DOM is written
+ * only when the model and the element disagree, which during plain typing they never do
+ * because the model is read *from* the element. That is what stops the caret jumping —
+ * a controlled contenteditable resets the selection on every keystroke.
+ */
+function EditorBlock({
+  block,
+  index,
+  onText,
+  onEnter,
+  onBackspaceAtStart,
+  onIndent,
+  onCheck,
+  onDelete,
+}: {
+  block: Block
+  index: number
+  onText: (text: string) => void
+  onEnter: (offset: number) => void
+  onBackspaceAtStart: () => void
+  onIndent: (delta: number) => void
+  onCheck: () => void
+  onDelete: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  /**
+   * Invariant: the DOM mirrors the model. Deliberately runs on *every* render with no
+   * dependency array — a markdown shortcut sets the text to '' when it was already '',
+   * so a `[block.text]` dependency never fires and the typed "# " is left behind in the
+   * heading. Typing costs nothing here because the model is read from the DOM, so the
+   * two already agree and no write happens.
+   *
+   * Layout, not passive: child layout effects run before the parent's, which is what
+   * lets ScriptEditor place the caret *after* this has rewritten the text.
+   */
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el && el.textContent !== block.text) el.textContent = block.text
+  })
+
+  if (block.type === 'divider') {
+    return (
+      <div className="group flex items-center gap-2 py-3">
+        <div className="h-px flex-1" style={{ background: 'var(--separator)' }} />
+        <button
+          onClick={onDelete}
+          aria-label="Delete divider"
+          className="shrink-0 p-1 text-[var(--faint)] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[#FF3B30]"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    )
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // A code block keeps Enter for itself — that is the one place a newline is content.
+      // Except on an empty one, or there is no way back out without a mouse.
+      if (block.type === 'code' && block.text) return
+      e.preventDefault()
+      onEnter(caretOffset(el))
+      return
+    }
+    if (e.key === 'Backspace' && caretOffset(el) === 0 && getSelection()?.isCollapsed) {
+      e.preventDefault()
+      onBackspaceAtStart()
+      return
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      onIndent(e.shiftKey ? -1 : 1)
+    }
+  }
+
+  const marker =
+    block.type === 'bullet' ? (
+      <span className="shrink-0 pt-[3px] text-[var(--muted)] select-none">•</span>
+    ) : block.type === 'number' ? (
+      <span className="shrink-0 pt-[1px] text-[15px] text-[var(--muted)] tabular-nums select-none">
+        {index}.
+      </span>
+    ) : block.type === 'todo' ? (
+      <button
+        onClick={onCheck}
+        aria-label={block.checked ? 'Mark not done' : 'Mark done'}
+        className="mt-[3px] grid size-[18px] shrink-0 place-items-center rounded-[5px] border-2 transition-colors"
+        style={
+          block.checked
+            ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
+            : { borderColor: 'var(--faint)' }
+        }
+      >
+        {block.checked && <Check size={11} strokeWidth={3} />}
+      </button>
+    ) : null
+
+  return (
+    <div
+      className="flex gap-2"
+      style={{ paddingLeft: (block.indent ?? 0) * 24, paddingTop: 2, paddingBottom: 2 }}
+    >
+      {marker}
+      {block.type === 'quote' && (
+        <div className="w-[3px] shrink-0 rounded-full" style={{ background: 'var(--faint)' }} />
+      )}
+      <div
+        ref={ref}
+        data-block={block.id}
+        contentEditable
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label={`Block ${index}`}
+        onInput={(e) => onText(e.currentTarget.textContent ?? '')}
+        onKeyDown={onKeyDown}
+        className={`min-w-0 flex-1 outline-none ${BLOCK_CLASS[block.type]} ${
+          block.type === 'code' ? 'rounded-xl bg-[var(--card)] px-3 py-2' : ''
+        }`}
+        style={
+          block.checked
+            ? { textDecoration: 'line-through', color: 'var(--muted)' }
+            : undefined
+        }
+      />
+    </div>
+  )
+}
+
+function ScriptEditor({
+  script,
+  onChange,
+  onBack,
+}: {
+  script: Script
+  onChange: (next: Script) => void
+  onBack: () => void
+}) {
+  const [blocks, setBlocks] = useState<Block[]>(script.blocks)
+  const [title, setTitle] = useState(script.title)
+  const [dirty, setDirty] = useState(false)
+  // Where the caret belongs once a structural edit has re-rendered.
+  const caret = useRef<{ id: string; offset: number } | null>(null)
+
+  // Autosave. The timer restarts on every keystroke, so it writes once the typing stops.
+  useEffect(() => {
+    if (!dirty) return
+    const t = setTimeout(() => {
+      onChange({ ...script, title: title.trim(), blocks, updatedAt: new Date().toISOString() })
+      setDirty(false)
+    }, 500)
+    return () => clearTimeout(t)
+  }, [dirty, blocks, title])
+
+  // Before paint, so the caret never visibly lands in the wrong place first.
+  useLayoutEffect(() => {
+    const want = caret.current
+    if (!want) return
+    caret.current = null
+    const el = document.querySelector<HTMLElement>(`[data-block="${want.id}"]`)
+    if (el) {
+      el.focus()
+      setCaret(el, want.offset)
+    }
+  }, [blocks])
+
+  const edit = (next: Block[]) => {
+    setBlocks(next)
+    setDirty(true)
+  }
+
+  const patch = (id: string, p: Partial<Block>) =>
+    edit(blocks.map((b) => (b.id === id ? { ...b, ...p } : b)))
+
+  const onText = (b: Block, text: string) => {
+    const shortcut = BLOCK_SHORTCUTS.find(([re]) => re.test(text))
+    if (!shortcut) return patch(b.id, { text })
+
+    const [, type] = shortcut
+    if (type === 'divider') {
+      // A divider holds no text, so typing continues in a fresh block under it.
+      const fresh = emptyBlock()
+      const i = blocks.findIndex((x) => x.id === b.id)
+      const next = [...blocks]
+      next[i] = { ...b, type: 'divider', text: '', indent: undefined }
+      next.splice(i + 1, 0, fresh)
+      edit(next)
+      caret.current = { id: fresh.id, offset: 0 }
+      return
+    }
+    edit(
+      blocks.map((x) =>
+        x.id === b.id
+          ? { ...x, type, text: '', checked: type === 'todo' ? false : undefined }
+          : x,
+      ),
+    )
+    caret.current = { id: b.id, offset: 0 }
+  }
+
+  const onEnter = (b: Block, offset: number) => {
+    // Enter on an empty list item leaves the list rather than making another bullet.
+    if (!b.text && b.type !== 'p') {
+      patch(b.id, { type: 'p', indent: undefined, checked: undefined })
+      caret.current = { id: b.id, offset: 0 }
+      return
+    }
+    const carry: BlockType = LIST_TYPES.includes(b.type) ? b.type : 'p'
+    const fresh: Block = {
+      id: crypto.randomUUID(),
+      type: carry,
+      text: b.text.slice(offset),
+      indent: b.indent,
+      checked: carry === 'todo' ? false : undefined,
+    }
+    const i = blocks.findIndex((x) => x.id === b.id)
+    const next = [...blocks]
+    next[i] = { ...b, text: b.text.slice(0, offset) }
+    next.splice(i + 1, 0, fresh)
+    edit(next)
+    caret.current = { id: fresh.id, offset: 0 }
+  }
+
+  const onBackspaceAtStart = (b: Block) => {
+    // Peel the formatting off before merging: one Backspace un-does the block type.
+    if (b.type !== 'p') {
+      patch(b.id, { type: 'p', indent: undefined, checked: undefined })
+      caret.current = { id: b.id, offset: 0 }
+      return
+    }
+    if (b.indent) {
+      patch(b.id, { indent: b.indent - 1 || undefined })
+      caret.current = { id: b.id, offset: 0 }
+      return
+    }
+    const i = blocks.findIndex((x) => x.id === b.id)
+    if (i <= 0) return
+    const prev = blocks[i - 1]
+    if (prev.type === 'divider') {
+      edit(blocks.filter((x) => x.id !== prev.id))
+      caret.current = { id: b.id, offset: 0 }
+      return
+    }
+    const joinAt = prev.text.length
+    edit(
+      blocks
+        .filter((x) => x.id !== b.id)
+        .map((x) => (x.id === prev.id ? { ...x, text: prev.text + b.text } : x)),
+    )
+    caret.current = { id: prev.id, offset: joinAt }
+  }
+
+  const onIndent = (b: Block, delta: number) => {
+    if (!LIST_TYPES.includes(b.type)) return
+    const next = Math.min(Math.max((b.indent ?? 0) + delta, 0), 3)
+    patch(b.id, { indent: next || undefined })
+    caret.current = { id: b.id, offset: caretOffsetOf(b.id) }
+  }
+
+  const words = wordCount(blocks)
+  const mins = readingMinutes(words)
+
+  // Numbering restarts after anything that is not a numbered item at the same depth.
+  let run = 0
+
+  return (
+    <div className="pt-1">
+      <div className="flex items-center gap-3 pb-2">
+        <button
+          onClick={onBack}
+          aria-label="Back to scripts"
+          className="-ml-1 shrink-0 rounded-full p-1 text-[var(--muted)] transition-colors hover:text-[var(--text)]"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <span className="text-[13px] text-[var(--muted)] tabular-nums">
+          {words} {words === 1 ? 'word' : 'words'}
+          {mins > 0 && ` · ${mins} min`}
+        </span>
+        <span className="ml-auto text-[13px] text-[var(--faint)]">
+          {dirty ? 'Saving…' : 'Saved'}
+        </span>
+      </div>
+
+      <input
+        value={title}
+        onChange={(e) => {
+          setTitle(e.target.value)
+          setDirty(true)
+        }}
+        placeholder="Untitled script"
+        className="w-full bg-transparent pt-2 pb-3 text-[28px] font-semibold tracking-tight outline-none"
+      />
+
+      <div className="pb-24">
+        {blocks.map((b) => {
+          run = b.type === 'number' ? run + 1 : 0
+          return (
+            <EditorBlock
+              key={b.id}
+              block={b}
+              index={b.type === 'number' ? run : 0}
+              onText={(text) => onText(b, text)}
+              onEnter={(offset) => onEnter(b, offset)}
+              onBackspaceAtStart={() => onBackspaceAtStart(b)}
+              onIndent={(delta) => onIndent(b, delta)}
+              onCheck={() => patch(b.id, { checked: !b.checked })}
+              onDelete={() => edit(blocks.filter((x) => x.id !== b.id))}
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** The caret inside a block that is currently mounted, or 0. */
+function caretOffsetOf(id: string): number {
+  const el = document.querySelector<HTMLElement>(`[data-block="${id}"]`)
+  return el ? caretOffset(el) : 0
+}
+
+function ScriptsView({
+  scripts,
+  setScripts,
+  openId,
+  setOpenId,
+}: {
+  scripts: Script[]
+  setScripts: (s: Script[]) => void
+  openId: string | null
+  setOpenId: (id: string | null) => void
+}) {
+  const [title, setTitle] = useState('')
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const open = scripts.find((s) => s.id === openId)
+
+  const add = () => {
+    if (!title.trim()) return
+    const script: Script = {
+      id: crypto.randomUUID(),
+      title: title.trim(),
+      status: 'Idea',
+      blocks: [emptyBlock()],
+      updatedAt: new Date().toISOString(),
+    }
+    setScripts([script, ...scripts])
+    setTitle('')
+    setOpenId(script.id)
+  }
+
+  // Same shape as the Buy list: headers and empty-section ghosts are sortable members,
+  // which is what lets a drag across a boundary reassign the status.
+  const rows = useMemo(() => buildRows(scripts, SCRIPT_STATUSES, (s) => s.status), [scripts])
+
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over) return
+    const ids = rows.map(rowId)
+    const from = ids.indexOf(String(active.id))
+    const to = ids.indexOf(String(over.id))
+    if (from < 0 || to < 0 || from === to) return
+    setScripts(
+      applyDrag(scripts, rows, from, to, SCRIPT_STATUSES, (s, status) => ({
+        ...s,
+        status: status as ScriptStatus,
+      })),
+    )
+  }
+
+  if (open)
+    return (
+      <ScriptEditor
+        script={open}
+        onBack={() => setOpenId(null)}
+        onChange={(next) => setScripts(scripts.map((s) => (s.id === next.id ? next : s)))}
+      />
+    )
+
+  return (
+    <>
+      <div className="rounded-2xl bg-[var(--card)] px-4 py-1">
+        <div className="flex items-center gap-2">
+          <span className="text-[20px] leading-none text-[var(--faint)]">+</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+            placeholder="New script"
+            className="w-full bg-transparent py-3 text-[17px] tracking-tight outline-none"
+          />
+        </div>
+      </div>
+
+      {scripts.length === 0 ? (
+        <p className="px-1 pt-6 text-[17px] text-[var(--muted)]">
+          Nothing written yet. Name the first one.
+        </p>
+      ) : (
+        <div className="pt-2">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToVerticalAxis]}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext items={rows.map(rowId)} strategy={verticalListSortingStrategy}>
+              <AnimatePresence initial={false}>
+                {rows.map((r) =>
+                  r.kind === 'header' ? (
+                    <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
+                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full"
+                          style={{ background: STATUS_COLOR[r.section as ScriptStatus] }}
+                        />
+                        {r.section}
+                      </h2>
+                    </Slot>
+                  ) : r.kind === 'ghost' ? (
+                    <Slot key={rowId(r)} id={rowId(r)} droppable>
+                      <p className="px-1 py-2 text-[13px] text-[var(--ghost)]">Nothing here</p>
+                    </Slot>
+                  ) : (
+                    <ScriptRow
+                      key={r.item.id}
+                      script={r.item}
+                      onOpen={() => setOpenId(r.item.id)}
+                      onDelete={() => setScripts(scripts.filter((s) => s.id !== r.item.id))}
+                    />
+                  ),
+                )}
+              </AnimatePresence>
+            </SortableContext>
+          </DndContext>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ScriptRow({
+  script,
+  onOpen,
+  onDelete,
+}: {
+  script: Script
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id: script.id })
+  const words = wordCount(script.blocks)
+  const mins = readingMinutes(words)
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Translate.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : undefined,
+        position: 'relative',
+      }}
+    >
+      <motion.div
+        exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
+        className="mb-2.5 flex touch-pan-y items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
+        style={isDragging ? { background: 'var(--card-2)' } : undefined}
+      >
+        <button
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          aria-label="Reorder"
+          className={`${TAP} shrink-0 cursor-grab p-1 text-[var(--faint)] active:cursor-grabbing`}
+          style={{ touchAction: 'none' }}
+        >
+          <GripVertical size={18} />
+        </button>
+
+        <button onClick={onOpen} className="min-w-0 flex-1 text-left">
+          <span className="block truncate text-[17px] tracking-tight">
+            {script.title || 'Untitled script'}
+          </span>
+          <span className="flex items-center gap-2 pt-1 text-[13px] text-[var(--muted)]">
+            <span
+              className="shrink-0 rounded-full px-2 py-0.5 text-[11px] leading-none font-semibold"
+              style={{
+                background: `${STATUS_COLOR[script.status]}1F`,
+                color: STATUS_COLOR[script.status],
+              }}
+            >
+              {script.status}
+            </span>
+            <span className="min-w-0 truncate tabular-nums">
+              {words} {words === 1 ? 'word' : 'words'}
+              {mins > 0 && ` · ${mins} min`} · {relativeTime(script.updatedAt)}
+            </span>
+          </span>
+        </button>
+
+        <button
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={onDelete}
+          aria-label={`Delete ${script.title || 'Untitled script'}`}
+          className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
+        >
+          <X size={16} />
+        </button>
+      </motion.div>
     </div>
   )
 }

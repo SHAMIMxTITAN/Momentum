@@ -15,6 +15,11 @@ import {
   monthlySpend,
   reorderVisible,
   parseItems,
+  parseScripts,
+  parseBlocks,
+  wordCount,
+  readingMinutes,
+  relativeTime,
   parsePayments,
   parseTodos,
   rowId,
@@ -499,4 +504,58 @@ test('a daily keeps a whitelisted colour; junk and one-offs get none', () => {
   // a one-off has no accent to colour
   const [once] = parseTodos([{ title: 'Call the bank', color: '#007AFF' }])
   assert.equal(once.color, undefined)
+})
+
+/* --------------------------------------------------------------- scripts */
+
+test('parseScripts fills defaults and never leaves a script with nowhere to type', () => {
+  const [s] = parseScripts([{ title: '  Intro hook  ' }])
+  assert.equal(s.title, 'Intro hook')
+  assert.equal(s.status, 'Idea')
+  assert.equal(s.blocks.length, 1, 'an empty script still gets one block')
+  assert.equal(s.blocks[0].type, 'p')
+  assert.ok(s.updatedAt)
+
+  const [bad] = parseScripts([{ title: 'x', status: 'Publishing' }])
+  assert.equal(bad.status, 'Idea', 'an unknown status falls back')
+  assert.equal(parseScripts('nope').length, 0)
+  assert.equal(parseScripts([null, 5, 'x']).length, 0)
+})
+
+test('parseBlocks clamps indent, drops junk types and keeps checked only on todos', () => {
+  const blocks = parseBlocks([
+    { type: 'h1', text: 'Title' },
+    { type: 'script', text: 'unknown type' },
+    { type: 'todo', text: 'a', checked: true },
+    { type: 'bullet', text: 'b', checked: true },
+    { type: 'bullet', text: 'c', indent: 99 },
+    { type: 'bullet', text: 'd', indent: -4 },
+  ])
+  assert.equal(blocks[0].type, 'h1')
+  assert.equal(blocks[1].type, 'p', 'unknown block type degrades to a paragraph')
+  assert.equal(blocks[2].checked, true)
+  assert.equal(blocks[3].checked, undefined, 'checked is meaningless off a todo')
+  assert.equal(blocks[4].indent, 3, 'indent clamps to 3')
+  assert.equal(blocks[5].indent, undefined, 'negative indent clamps to 0')
+})
+
+test('word count and reading time', () => {
+  const blocks = parseBlocks([
+    { type: 'p', text: 'one two three' },
+    { type: 'divider', text: '' },
+    { type: 'p', text: '   ' },
+  ])
+  assert.equal(wordCount(blocks), 3)
+  assert.equal(readingMinutes(0), 0, 'an empty script is not "1 min"')
+  assert.equal(readingMinutes(150), 1)
+  assert.equal(readingMinutes(10), 1, 'a few words still round up to a minute')
+  assert.equal(readingMinutes(450), 3)
+})
+
+test('relativeTime', () => {
+  const now = new Date('2026-08-29T12:00:00')
+  assert.equal(relativeTime('2026-08-29T11:59:40', now), 'just now')
+  assert.equal(relativeTime('2026-08-29T10:00:00', now), '2 hours ago')
+  assert.equal(relativeTime('2026-08-28T12:00:00', now), 'yesterday')
+  assert.equal(relativeTime('nonsense', now), '', 'a junk timestamp renders nothing')
 })

@@ -93,6 +93,7 @@ export type Payment = {
 const ITEMS_KEY = 'buy-next.v1'
 const TODOS_KEY = 'buy-next.todos.v1'
 const PAYMENTS_KEY = 'buy-next.payments.v1'
+const SCRIPTS_KEY = 'buy-next.scripts.v1'
 
 /**
  * Links get rendered into an href, so anything but http(s) is a script-injection
@@ -210,6 +211,126 @@ export function parsePayments(raw: unknown): Payment[] {
       },
     ]
   })
+}
+
+/* ------------------------------------------------------------------ scripts */
+
+export const SCRIPT_STATUSES = ['Idea', 'Writing', 'Ready', 'Recorded'] as const
+export type ScriptStatus = (typeof SCRIPT_STATUSES)[number]
+
+export const BLOCK_TYPES = [
+  'p',
+  'h1',
+  'h2',
+  'h3',
+  'bullet',
+  'number',
+  'todo',
+  'quote',
+  'code',
+  'divider',
+] as const
+export type BlockType = (typeof BLOCK_TYPES)[number]
+
+/**
+ * Structured, never innerHTML — the point is that a script survives being exported to
+ * Markdown later. `indent` is a flat depth rather than nested `children`: nesting reads
+ * nicer in a type and is miserable everywhere else (splitting on Enter, merging on
+ * Backspace, reordering), and Markdown is itself indent-based, so flat maps straight out.
+ */
+export type Block = {
+  id: string
+  type: BlockType
+  text: string
+  /** Only on a 'todo' block. */
+  checked?: boolean
+  /** 0..3, only meaningful on list blocks. */
+  indent?: number
+}
+
+export type Script = {
+  id: string
+  title: string
+  status: ScriptStatus
+  blocks: Block[]
+  updatedAt: string
+}
+
+export const emptyBlock = (type: BlockType = 'p'): Block => ({
+  id: crypto.randomUUID(),
+  type,
+  text: '',
+})
+
+export function parseBlocks(raw: unknown): Block[] {
+  const blocks = (Array.isArray(raw) ? raw : []).flatMap((r): Block[] => {
+    if (!r || typeof r !== 'object') return []
+    const o = r as Record<string, unknown>
+    const type = (BLOCK_TYPES as readonly string[]).includes(o.type as string)
+      ? (o.type as BlockType)
+      : 'p'
+    const indent = typeof o.indent === 'number' && isFinite(o.indent) ? o.indent : 0
+    return [
+      {
+        id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
+        type,
+        text: typeof o.text === 'string' ? o.text : '',
+        checked: type === 'todo' && o.checked === true ? true : undefined,
+        indent: Math.min(Math.max(Math.round(indent), 0), 3) || undefined,
+      },
+    ]
+  })
+  // A script always has somewhere to type.
+  return blocks.length ? blocks : [emptyBlock()]
+}
+
+export function parseScripts(raw: unknown): Script[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((r): Script[] => {
+    if (!r || typeof r !== 'object') return []
+    const o = r as Record<string, unknown>
+    return [
+      {
+        id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
+        title: typeof o.title === 'string' ? o.title.trim() : '',
+        status: (SCRIPT_STATUSES as readonly string[]).includes(o.status as string)
+          ? (o.status as ScriptStatus)
+          : 'Idea',
+        blocks: parseBlocks(o.blocks),
+        updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : new Date().toISOString(),
+      },
+    ]
+  })
+}
+
+/** Words across every block. A divider has no text, so it contributes nothing. */
+export const wordCount = (blocks: Block[]): number =>
+  blocks.reduce((n, b) => n + (b.text.trim() ? b.text.trim().split(/\s+/).length : 0), 0)
+
+/** Rounded up, and never "0 min" for a script that has words in it. */
+export const readingMinutes = (words: number): number => (words ? Math.max(1, Math.round(words / 150)) : 0)
+
+const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 31536000],
+  ['month', 2592000],
+  ['week', 604800],
+  ['day', 86400],
+  ['hour', 3600],
+  ['minute', 60],
+]
+
+/** "2 hours ago", "yesterday". Intl does the wording and the pluralising. */
+export function relativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso).getTime()
+  if (!isFinite(then)) return ''
+  const secs = Math.round((then - now.getTime()) / 1000)
+  const abs = Math.abs(secs)
+  if (abs < 45) return 'just now'
+  for (const [unit, size] of UNITS) {
+    if (abs >= size) return rtf.format(Math.round(secs / size), unit)
+  }
+  return 'just now'
 }
 
 export const UNGROUPED = 'Other'
@@ -512,6 +633,11 @@ export function useTodos() {
 export function usePayments() {
   const [payments, setPayments] = useStored(PAYMENTS_KEY, parsePayments)
   return { payments, setPayments }
+}
+
+export function useScripts() {
+  const [scripts, setScripts] = useStored(SCRIPTS_KEY, parseScripts)
+  return { scripts, setScripts }
 }
 
 const BUDGET_KEY = 'buy-next.budget'
