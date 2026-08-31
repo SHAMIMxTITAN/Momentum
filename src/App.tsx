@@ -32,6 +32,8 @@ import {
   groupPayments,
   monthlySpend,
   isDone,
+  DAILY_COLORS,
+  DEFAULT_DAILY_COLOR,
   reorderVisible,
   rowId,
   safeUrl,
@@ -1139,8 +1141,14 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
                     onMove={() => moveOn(t)}
                     nextDay={WHENS[(WHENS.indexOf(t.when) + 1) % WHENS.length]}
                     onDaily={() =>
-                      patch(t.id, { daily: t.daily ? undefined : true, when: 'Today' })
+                      patch(t.id, {
+                        daily: t.daily ? undefined : true,
+                        when: 'Today',
+                        // Dropping daily drops the colour with it — a one-off has no accent.
+                        color: t.daily ? undefined : t.color,
+                      })
                     }
+                    onColor={(c) => patch(t.id, { color: c })}
                     onDelete={() => remove(t)}
                   />
                 ))}
@@ -1236,6 +1244,7 @@ function TodoRow({
   onMove,
   nextDay,
   onDaily,
+  onColor,
   onDelete,
 }: {
   todo: Todo
@@ -1247,6 +1256,7 @@ function TodoRow({
   onMove: () => void
   nextDay: When
   onDaily: () => void
+  onColor: (c: string) => void
   onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
@@ -1255,9 +1265,11 @@ function TodoRow({
 
   const done = isDone(todo)
   const overdue = isOverdue(todo)
-  // Indigo says "this one repeats", green says "and it's handled for today". A one-off has
-  // no accent at all, so the standing tasks stay picked out of the list at a glance.
-  const accent = todo.daily ? (done ? '#34C759' : '#5E5CE6') : undefined
+  // The accent says "this one repeats", green says "and it's handled for today". A one-off
+  // has no accent at all, so the standing tasks stay picked out of the list at a glance.
+  // Done stays green whatever colour the task carries — that signal is worth more than
+  // the grouping, and a finished task no longer needs telling apart.
+  const accent = todo.daily ? (done ? '#34C759' : (todo.color ?? DEFAULT_DAILY_COLOR)) : undefined
 
   const save = () => {
     const next = draft.trim()
@@ -1278,7 +1290,7 @@ function TodoRow({
     >
       <motion.div
         exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        className="mb-2.5 flex touch-pan-y items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
+        className="mb-2.5 touch-pan-y overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
         style={
           isDragging
             ? { background: 'var(--card-2)' }
@@ -1287,118 +1299,147 @@ function TodoRow({
               : undefined
         }
       >
-        <button
-          ref={setActivatorNodeRef}
-          {...attributes}
-          {...listeners}
-          aria-label="Reorder"
-          className={`${TAP} shrink-0 cursor-grab p-1 text-[var(--faint)] active:cursor-grabbing`}
-          style={{ touchAction: 'none' }}
-        >
-          <GripVertical size={18} />
-        </button>
-
-        <button
-          onClick={onToggle}
-          aria-label={done ? `Mark ${todo.title} not done` : `Mark ${todo.title} done`}
-          className={`${TAP} grid size-6 shrink-0 place-items-center rounded-full border-2 transition-colors`}
-          style={
-            done
-              ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
-              : { borderColor: accent ?? 'var(--faint)' }
-          }
-        >
-          {done && <Check size={14} strokeWidth={3} />}
-        </button>
-
-        {editing ? (
-          <input
-            autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={save}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') save()
-              if (e.key === 'Escape') {
-                setDraft(todo.title)
-                setEditing(null)
-              }
-            }}
-            className={`${FIELD} min-w-0 flex-1 text-[17px]`}
-          />
-        ) : (
+        <div className="flex items-center gap-2.5">
           <button
-            onClick={() => {
-              setDraft(todo.title)
-              setEditing(todo.id)
-            }}
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[17px] tracking-tight break-words"
+            ref={setActivatorNodeRef}
+            {...attributes}
+            {...listeners}
+            aria-label="Reorder"
+            className={`${TAP} shrink-0 cursor-grab p-1 text-[var(--faint)] active:cursor-grabbing`}
+            style={{ touchAction: 'none' }}
           >
-            {/* Marker, not a control — turning it off lives in the editor, so the row
-                never grows a sixth button just to say "this one repeats". */}
-            {todo.daily && <Repeat size={12} className="shrink-0" style={{ color: accent }} aria-label="Daily" />}
-            {overdue && (
-              <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/12">
-                Due
-              </span>
-            )}
-            <span className="min-w-0" style={done ? { color: 'var(--muted)' } : undefined}>
-              {todo.title}
-            </span>
+            <GripVertical size={18} />
           </button>
-        )}
-
-        {/* onPointerDown, not onClick: the input's onBlur fires first and closes the editor,
-            which would eat a plain click before it lands. */}
-        {editing && (
+    
           <button
-            onPointerDown={(e) => {
-              e.preventDefault()
-              onDaily()
-            }}
-            aria-pressed={!!todo.daily}
-            aria-label={todo.daily ? `Stop repeating ${todo.title}` : `Repeat ${todo.title} daily`}
-            title={todo.daily ? 'Stop repeating' : 'Every day'}
-            className="shrink-0 rounded-full p-1 transition-colors"
+            onClick={onToggle}
+            aria-label={done ? `Mark ${todo.title} not done` : `Mark ${todo.title} done`}
+            className={`${TAP} grid size-6 shrink-0 place-items-center rounded-full border-2 transition-colors`}
             style={
-              todo.daily
-                ? { background: `${WHEN_COLOR.Today}1F`, color: WHEN_COLOR.Today }
-                : { color: 'var(--faint)' }
+              done
+                ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
+                : { borderColor: accent ?? 'var(--faint)' }
             }
           >
-            <Repeat size={16} />
+            {done && <Check size={14} strokeWidth={3} />}
           </button>
-        )}
-
-        <button
-          onClick={onStar}
-          aria-label={todo.important ? `Unstar ${todo.title}` : `Mark ${todo.title} important`}
-          title="Important"
-          className="shrink-0 p-1 transition-colors"
-          style={{ color: todo.important ? '#FF9500' : 'var(--faint)' }}
-        >
-          <Star size={16} fill={todo.important ? '#FF9500' : 'none'} />
-        </button>
-
-        {!todo.daily && (
+    
+          {editing ? (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={save}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') save()
+                if (e.key === 'Escape') {
+                  setDraft(todo.title)
+                  setEditing(null)
+                }
+              }}
+              className={`${FIELD} min-w-0 flex-1 text-[17px]`}
+            />
+          ) : (
+            <button
+              onClick={() => {
+                setDraft(todo.title)
+                setEditing(todo.id)
+              }}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[17px] tracking-tight break-words"
+            >
+              {/* Marker, not a control — turning it off lives in the editor, so the row
+                  never grows a sixth button just to say "this one repeats". */}
+              {todo.daily && <Repeat size={12} className="shrink-0" style={{ color: accent }} aria-label="Daily" />}
+              {overdue && (
+                <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/12">
+                  Due
+                </span>
+              )}
+              <span className="min-w-0" style={done ? { color: 'var(--muted)' } : undefined}>
+                {todo.title}
+              </span>
+            </button>
+          )}
+    
+          {/* onPointerDown, not onClick: the input's onBlur fires first and closes the editor,
+              which would eat a plain click before it lands. */}
+          {editing && (
+            <button
+              onPointerDown={(e) => {
+                e.preventDefault()
+                onDaily()
+              }}
+              aria-pressed={!!todo.daily}
+              aria-label={todo.daily ? `Stop repeating ${todo.title}` : `Repeat ${todo.title} daily`}
+              title={todo.daily ? 'Stop repeating' : 'Every day'}
+              className="shrink-0 rounded-full p-1 transition-colors"
+              style={
+                todo.daily
+                  ? { background: `${WHEN_COLOR.Today}1F`, color: WHEN_COLOR.Today }
+                  : { color: 'var(--faint)' }
+              }
+            >
+              <Repeat size={16} />
+            </button>
+          )}
+    
           <button
-            onClick={onMove}
-            aria-label={`Move ${todo.title} to ${nextDay}`}
-            title={`Move to ${nextDay}`}
-            className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[var(--text)]"
+            onClick={onStar}
+            aria-label={todo.important ? `Unstar ${todo.title}` : `Mark ${todo.title} important`}
+            title="Important"
+            className="shrink-0 p-1 transition-colors"
+            style={{ color: todo.important ? '#FF9500' : 'var(--faint)' }}
           >
-            <ChevronRight size={16} />
+            <Star size={16} fill={todo.important ? '#FF9500' : 'none'} />
           </button>
-        )}
+    
+          {!todo.daily && (
+            <button
+              onClick={onMove}
+              aria-label={`Move ${todo.title} to ${nextDay}`}
+              title={`Move to ${nextDay}`}
+              className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[var(--text)]"
+            >
+              <ChevronRight size={16} />
+            </button>
+          )}
+    
+          <button
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={onDelete}
+            aria-label={`Delete ${todo.title}`}
+            className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
+          >
+            <X size={16} />
+          </button>
+        </div>
 
-        <button
-          onPointerDown={(e) => e.preventDefault()}
-          onClick={onDelete}
-          aria-label={`Delete ${todo.title}`}
-          className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
-        >
-          <X size={16} />
-        </button>
+        {/* Second line, so six swatches never squeeze the title. Only for a daily: a
+            one-off has no accent, which is the point — grey means "just today". */}
+        {editing && todo.daily && (
+          <div className="flex items-center gap-2.5 pt-3 pl-9">
+            {DAILY_COLORS.map((c) => {
+              const on = (todo.color ?? DEFAULT_DAILY_COLOR) === c
+              return (
+                <button
+                  key={c}
+                  onPointerDown={(e) => {
+                    e.preventDefault()
+                    onColor(c)
+                  }}
+                  aria-label={`Colour ${todo.title}`}
+                  aria-pressed={on}
+                  className="size-5 shrink-0 rounded-full transition-transform"
+                  style={{
+                    background: c,
+                    // The ring is the selected state; no tick, no border-width jump.
+                    boxShadow: on ? `0 0 0 2px var(--card), 0 0 0 4px ${c}` : undefined,
+                  }}
+                />
+              )
+            })}
+          </div>
+        )}
       </motion.div>
     </div>
   )

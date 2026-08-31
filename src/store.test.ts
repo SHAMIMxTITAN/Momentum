@@ -485,3 +485,18 @@ test('doneByDay groups finished one-offs newest first and leaves dailies out', (
   // the daily never enters the log, and neither does anything still open
   assert.equal(groups.flatMap((g) => g.todos).some((x) => x.id === 'namaz' || x.id === 'open'), false)
 })
+
+test('a daily keeps a whitelisted colour; junk and one-offs get none', () => {
+  const [ok] = parseTodos([{ title: 'Fajr', daily: true, color: '#FF2D55' }])
+  assert.equal(ok.color, '#FF2D55')
+
+  // not in the palette -> dropped, so an imported file cannot inject a style value
+  const [bad] = parseTodos([{ title: 'Fajr', daily: true, color: 'red; content:evil' }])
+  assert.equal(bad.color, undefined)
+  const [green] = parseTodos([{ title: 'Fajr', daily: true, color: '#34C759' }])
+  assert.equal(green.color, undefined, 'green means done, it is not a choice')
+
+  // a one-off has no accent to colour
+  const [once] = parseTodos([{ title: 'Call the bank', color: '#007AFF' }])
+  assert.equal(once.color, undefined)
+})

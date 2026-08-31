@@ -46,7 +46,32 @@ export type Todo = {
    * an earlier day instead of looking freshly added.
    */
   since?: string
+  /**
+   * Only meaningful on a daily. A stack of standing tasks all in one accent reads as one
+   * undifferentiated block — this is what lets the five prayers be one colour and the
+   * English lesson another. One-offs have no accent at all and never get one.
+   */
+  color?: string
 }
+
+/**
+ * A closed set, not a free colour field: it is a whitelist at the trust boundary (an
+ * imported file must not put arbitrary text into a style), and six distinguishable
+ * choices beat a colour wheel nobody wants to operate on a phone.
+ *
+ * Green and red are deliberately absent — green already means "done" on the circle and
+ * red already means overdue, so neither can be spent on decoration.
+ */
+export const DAILY_COLORS = [
+  '#5E5CE6', // indigo — the default
+  '#007AFF', // blue
+  '#30B0C7', // teal
+  '#AF52DE', // purple
+  '#FF2D55', // pink
+  '#FF9500', // orange
+] as const
+
+export const DEFAULT_DAILY_COLOR = DAILY_COLORS[0]
 
 /**
  * A recurring monthly commitment — subscriptions, rent, an EMI. Unlike an Item these are
@@ -157,6 +182,11 @@ export function parseTodos(raw: unknown): Todo[] {
         important: o.important === true ? true : undefined,
         daily: o.daily === true ? true : undefined,
         since: typeof o.since === 'string' ? o.since : undefined,
+        // Whitelisted, and only kept on a daily — a one-off has no accent to colour.
+        color:
+          o.daily === true && (DAILY_COLORS as readonly string[]).includes(o.color as string)
+            ? (o.color as string)
+            : undefined,
       },
     ]
   })

@@ -8,7 +8,7 @@ session; this file is the context for continuing it.
 ```bash
 npm run dev          # vite, port 5173, binds to LAN
 npm run build        # -> dist/, relative paths, static deploy anywhere
-npm test             # node --test src/store.test.ts  (38 tests, all passing)
+npm test             # node --test src/store.test.ts  (42 tests, all passing)
 npx tsc --noEmit     # typecheck
 ```
 
@@ -46,7 +46,7 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   meant for the tag chip row. **Scroll position is the source of truth**; `onScroll` only
   mirrors it into `tab` so the header can highlight one, and the header sits outside the
   scroller. Each page scrolls vertically on its own (`h-dvh` column + `min-h-0 flex-1`),
-  which is what stops a short page inheriting a tall one.'s height. **Any inner
+  which is what stops a short page inheriting a tall one's height. **Any inner
   horizontal scroller needs `overscroll-x-contain`** or reaching its end chains the rest
   of the gesture to the pager and flips the page.
 - **Daily tasks are a flag, not a second list.** `todo.daily` marks a standing task (Namaz,
@@ -63,6 +63,14 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   the inline editor (tap the title). The editor toggle is `onPointerDown` with
   `preventDefault`, because the input's `onBlur` closes the editor and would otherwise eat
   a plain click. Dailies show a small repeat glyph and lose the move-to-next-day chevron.
+  A daily can carry a `color` from `DAILY_COLORS` (default indigo); it tints the circle
+  and the repeat glyph, so five prayers can be one colour and an English lesson another
+  instead of the whole stack reading as one block. Closed palette, not a free field: it is
+  a whitelist at the trust boundary, and **green and red are deliberately absent** because
+  green already means done on that circle and red already means overdue. Ticking still
+  turns it green whatever colour it carries. One-offs stay grey and are never offered a
+  colour -- that grey is what says "just today". The swatches live on a second line of the
+  inline editor so they never squeeze the title.
 - **Sections.** Items group into Now / Soon / Later / Maybe. The section headers and the "Nothing here"
   ghosts are themselves members of the dnd-kit sortable list — that is what makes dragging
   across a boundary reassign `urgency`. `applyDrag` re-reads each item's urgency from the
