@@ -219,33 +219,357 @@ export const SCRIPT_STATUSES = ['Idea', 'Writing', 'Ready', 'Recorded'] as const
 export type ScriptStatus = (typeof SCRIPT_STATUSES)[number]
 
 export const BLOCK_TYPES = [
-  'p',
+  'paragraph',
   'h1',
   'h2',
   'h3',
-  'bullet',
-  'number',
-  'todo',
+  'bulleted',
+  'numbered',
   'quote',
   'code',
   'divider',
+  'toggle',
+  'callout',
 ] as const
 export type BlockType = (typeof BLOCK_TYPES)[number]
 
 /**
- * Structured, never innerHTML — the point is that a script survives being exported to
- * Markdown later. `indent` is a flat depth rather than nested `children`: nesting reads
- * nicer in a type and is miserable everywhere else (splitting on Enter, merging on
- * Backspace, reordering), and Markdown is itself indent-based, so flat maps straight out.
+ * Marks are flags on a run of text, never nested tags — that is what lets bold and a
+ * highlight combine without the DOM deciding which one wraps the other, and what makes a
+ * Markdown serialiser a fold over an array rather than a tree walk.
  */
+export type Span = {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strike?: boolean
+  code?: boolean
+  color?: string
+  bg?: string
+  link?: string
+}
+
+export type BlockProps = {
+  collapsed?: boolean
+  color?: string
+  emoji?: string
+  language?: string
+}
+
 export type Block = {
   id: string
   type: BlockType
-  text: string
-  /** Only on a 'todo' block. */
-  checked?: boolean
-  /** 0..3, only meaningful on list blocks. */
-  indent?: number
+  content: Span[]
+  children: Block[]
+  props?: BlockProps
+}
+
+/** The mark keys, so a toggle can be applied generically. `text` is not one of them. */
+export const MARKS = ['bold', 'italic', 'underline', 'strike', 'code'] as const
+export type Mark = (typeof MARKS)[number]
+
+export const emptyBlock = (type: BlockType = 'paragraph'): Block => ({
+  id: crypto.randomUUID(),
+  type,
+  content: [],
+  children: [],
+})
+
+export const spanText = (content: Span[]): string => content.map((s) => s.text).join('')
+
+const sameMarks = (a: Span, b: Span): boolean =>
+  a.bold === b.bold &&
+  a.italic === b.italic &&
+  a.underline === b.underline &&
+  a.strike === b.strike &&
+  a.code === b.code &&
+  a.color === b.color &&
+  a.bg === b.bg &&
+  a.link === b.link
+
+/**
+ * Drops empty runs and coalesces neighbours carrying the same marks. Everything below
+ * returns through here, so a block never accumulates fragmented spans as it is edited.
+ */
+export function normalizeSpans(content: Span[]): Span[] {
+  const out: Span[] = []
+  for (const s of content) {
+    if (!s.text) continue
+    const last = out[out.length - 1]
+    if (last && sameMarks(last, s)) last.text += s.text
+    else out.push({ ...s })
+  }
+  return out
+}
+
+/** Characters [from, to) as spans, with marks preserved across the cut. */
+export function sliceSpans(content: Span[], from: number, to: number = Infinity): Span[] {
+  const out: Span[] = []
+  let at = 0
+  for (const s of content) {
+    const start = at
+    const end = at + s.text.length
+    at = end
+    if (end <= from || start >= to) continue
+    out.push({
+      ...s,
+      text: s.text.slice(Math.max(from - start, 0), Math.min(to - start, s.text.length)),
+    })
+  }
+  return normalizeSpans(out)
+}
+
+export const concatSpans = (...parts: Span[][]): Span[] => normalizeSpans(parts.flat())
+
+/**
+ * Set or clear one mark over [from, to). Runs split at the boundaries so a mark can cover
+ * part of a span. `on` is passed in rather than toggled per-run: a selection across mixed
+ * formatting would otherwise invert itself piece by piece instead of picking one answer.
+ */
+export function applyMark(
+  content: Span[],
+  from: number,
+  to: number,
+  mark: Mark | 'color' | 'bg',
+  on: boolean | string | undefined,
+): Span[] {
+  if (from >= to) return content
+  const before = sliceSpans(content, 0, from)
+  const middle = sliceSpans(content, from, to).map((s) => ({ ...s, [mark]: on || undefined }))
+  const after = sliceSpans(content, to)
+  return concatSpans(before, middle, after)
+}
+
+/**
+ * True when every character in the range already carries the mark. That is what makes a
+ * toolbar button a toggle rather than a one-way switch.
+ */
+export function hasMark(content: Span[], from: number, to: number, mark: Mark): boolean {
+  const run = sliceSpans(content, from, to)
+  return run.length > 0 && run.every((s) => s[mark] === true)
+}
+
+/** v1 stored a flat list of `{type, text, indent}`; the indents become real nesting. */
+const LEGACY_TYPE: Record<string, BlockType> = {
+  p: 'paragraph',
+  bullet: 'bulleted',
+  number: 'numbered',
+  // Scripts do not need checklists — the To-do tab covers that — so an old one becomes a bullet.
+  todo: 'bulleted',
+  h1: 'h1',
+  h2: 'h2',
+  h3: 'h3',
+  quote: 'quote',
+  code: 'code',
+  divider: 'divider',
+}
+
+function parseSpans(raw: unknown, fallbackText: unknown): Span[] {
+  if (Array.isArray(raw)) {
+    return normalizeSpans(
+      raw.flatMap((r): Span[] => {
+        if (!r || typeof r !== 'object') return []
+        const o = r as Record<string, unknown>
+        if (typeof o.text !== 'string' || !o.text) return []
+        // Keys are only set when they are true, so a plain run is exactly `{ text }` —
+        // undefined-valued keys would survive a deepEqual and bloat every comparison.
+        const span: Span = { text: o.text }
+        for (const m of MARKS) if (o[m] === true) span[m] = true
+        if (typeof o.color === 'string') span.color = o.color
+        if (typeof o.bg === 'string') span.bg = o.bg
+        const link = safeUrl(o.link)
+        if (link) span.link = link
+        return [span]
+      }),
+    )
+  }
+  return typeof fallbackText === 'string' && fallbackText ? [{ text: fallbackText }] : []
+}
+
+export function parseBlocks(raw: unknown): Block[] {
+  const flat = (Array.isArray(raw) ? raw : []).flatMap((r): { block: Block; indent: number }[] => {
+    if (!r || typeof r !== 'object') return []
+    const o = r as Record<string, unknown>
+    const named = typeof o.type === 'string' ? o.type : ''
+    const type: BlockType = (BLOCK_TYPES as readonly string[]).includes(named)
+      ? (named as BlockType)
+      : (LEGACY_TYPE[named] ?? 'paragraph')
+    const indentRaw = typeof o.indent === 'number' && isFinite(o.indent) ? Math.round(o.indent) : 0
+    const props = o.props && typeof o.props === 'object' ? (o.props as BlockProps) : undefined
+    return [
+      {
+        indent: Math.min(Math.max(indentRaw, 0), 3),
+        block: {
+          id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
+          type,
+          content: parseSpans(o.content, o.text),
+          children: parseBlocks(o.children),
+          props: props && Object.keys(props).length ? props : undefined,
+        },
+      },
+    ]
+  })
+
+  // A jump of more than one level clamps to one, so a corrupt file cannot make a hole.
+  const roots: Block[] = []
+  const stack: Block[] = []
+  for (const { block, indent } of flat) {
+    const depth = Math.min(indent, stack.length)
+    stack.length = depth
+    const parent = stack[depth - 1]
+    if (parent) parent.children.push(block)
+    else roots.push(block)
+    stack.push(block)
+  }
+  return roots
+}
+
+/** Depth-first, so callers can treat the tree as the list that is actually on screen. */
+export function flattenBlocks(blocks: Block[]): { block: Block; depth: number }[] {
+  const out: { block: Block; depth: number }[] = []
+  const walk = (list: Block[], depth: number) => {
+    for (const b of list) {
+      out.push({ block: b, depth })
+      if (b.children.length) walk(b.children, depth + 1)
+    }
+  }
+  walk(blocks, 0)
+  return out
+}
+
+/** Words across every block, children included. A divider has no text. */
+export const wordCount = (blocks: Block[]): number =>
+  flattenBlocks(blocks).reduce((n, { block }) => {
+    const t = spanText(block.content).trim()
+    return n + (t ? t.split(/\s+/).length : 0)
+  }, 0)
+
+
+/* ---------------------------------------------------------- block tree ops */
+
+/** Replace one block in place, leaving the rest of the tree identical. */
+export function mapBlock(tree: Block[], id: string, fn: (b: Block) => Block): Block[] {
+  return tree.map((b) =>
+    b.id === id ? fn(b) : b.children.length ? { ...b, children: mapBlock(b.children, id, fn) } : b,
+  )
+}
+
+export function findBlock(tree: Block[], id: string): Block | null {
+  for (const b of tree) {
+    if (b.id === id) return b
+    const hit = findBlock(b.children, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+/** Drop a block (and its children) out of the tree. */
+export function removeBlock(tree: Block[], id: string): Block[] {
+  return tree.flatMap((b) =>
+    b.id === id ? [] : [b.children.length ? { ...b, children: removeBlock(b.children, id) } : b],
+  )
+}
+
+export function insertAfter(tree: Block[], id: string, blocks: Block[]): Block[] {
+  const out: Block[] = []
+  for (const b of tree) {
+    const next = b.children.length ? { ...b, children: insertAfter(b.children, id, blocks) } : b
+    out.push(next)
+    if (b.id === id) out.push(...blocks)
+  }
+  return out
+}
+
+/** The list a block lives in, plus its index there. */
+function locate(tree: Block[], id: string): { siblings: Block[]; index: number } | null {
+  const index = tree.findIndex((b) => b.id === id)
+  if (index >= 0) return { siblings: tree, index }
+  for (const b of tree) {
+    const hit = locate(b.children, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+export const blockDepth = (tree: Block[], id: string): number => {
+  const walk = (list: Block[], depth: number): number => {
+    for (const b of list) {
+      if (b.id === id) return depth
+      const hit = walk(b.children, depth + 1)
+      if (hit >= 0) return hit
+    }
+    return -1
+  }
+  return walk(tree, 0)
+}
+
+/**
+ * Nest under the sibling above. A first child has nothing to nest under, so it stays put
+ * — that is the rule that stops Tab opening a hole in the tree.
+ */
+export function indentBlock(tree: Block[], id: string): Block[] {
+  const at = locate(tree, id)
+  if (!at || at.index === 0) return tree
+  const block = at.siblings[at.index]
+  const above = at.siblings[at.index - 1]
+  return mapBlock(removeBlock(tree, id), above.id, (b) => ({
+    ...b,
+    children: [...b.children, block],
+  }))
+}
+
+/** Become the next sibling of the parent. A root block has nowhere to go. */
+export function outdentBlock(tree: Block[], id: string): Block[] {
+  const parent = findParent(tree, id)
+  if (!parent) return tree
+  const block = findBlock(tree, id)
+  if (!block) return tree
+  return insertAfter(removeBlock(tree, id), parent.id, [block])
+}
+
+export function findParent(tree: Block[], id: string): Block | null {
+  for (const b of tree) {
+    if (b.children.some((c) => c.id === id)) return b
+    const hit = findParent(b.children, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+/** Swap with the sibling above or below, carrying children along. */
+export function moveBlock(tree: Block[], id: string, dir: -1 | 1): Block[] {
+  const at = locate(tree, id)
+  if (!at) return tree
+  const to = at.index + dir
+  if (to < 0 || to >= at.siblings.length) return tree
+  const reordered = [...at.siblings]
+  const [held] = reordered.splice(at.index, 1)
+  reordered.splice(to, 0, held)
+  // Rebuild by replacing that sibling list wherever it sits.
+  const swap = (list: Block[]): Block[] =>
+    list === at.siblings
+      ? reordered
+      : list.map((b) => (b.children.length ? { ...b, children: swap(b.children) } : b))
+  return swap(tree)
+}
+
+const reid = (b: Block): Block => ({
+  ...b,
+  id: crypto.randomUUID(),
+  children: b.children.map(reid),
+})
+
+export function duplicateBlock(tree: Block[], id: string): Block[] {
+  const block = findBlock(tree, id)
+  return block ? insertAfter(tree, id, [reid(block)]) : tree
+}
+
+/** The block visually above `id` in the flattened order, or null at the top. */
+export function blockAbove(tree: Block[], id: string): Block | null {
+  const flat = flattenBlocks(tree)
+  const i = flat.findIndex((f) => f.block.id === id)
+  return i > 0 ? flat[i - 1].block : null
 }
 
 export type Script = {
@@ -256,39 +580,12 @@ export type Script = {
   updatedAt: string
 }
 
-export const emptyBlock = (type: BlockType = 'p'): Block => ({
-  id: crypto.randomUUID(),
-  type,
-  text: '',
-})
-
-export function parseBlocks(raw: unknown): Block[] {
-  const blocks = (Array.isArray(raw) ? raw : []).flatMap((r): Block[] => {
-    if (!r || typeof r !== 'object') return []
-    const o = r as Record<string, unknown>
-    const type = (BLOCK_TYPES as readonly string[]).includes(o.type as string)
-      ? (o.type as BlockType)
-      : 'p'
-    const indent = typeof o.indent === 'number' && isFinite(o.indent) ? o.indent : 0
-    return [
-      {
-        id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
-        type,
-        text: typeof o.text === 'string' ? o.text : '',
-        checked: type === 'todo' && o.checked === true ? true : undefined,
-        indent: Math.min(Math.max(Math.round(indent), 0), 3) || undefined,
-      },
-    ]
-  })
-  // A script always has somewhere to type.
-  return blocks.length ? blocks : [emptyBlock()]
-}
-
 export function parseScripts(raw: unknown): Script[] {
   if (!Array.isArray(raw)) return []
   return raw.flatMap((r): Script[] => {
     if (!r || typeof r !== 'object') return []
     const o = r as Record<string, unknown>
+    const blocks = parseBlocks(o.blocks)
     return [
       {
         id: typeof o.id === 'string' && o.id ? o.id : crypto.randomUUID(),
@@ -296,16 +593,13 @@ export function parseScripts(raw: unknown): Script[] {
         status: (SCRIPT_STATUSES as readonly string[]).includes(o.status as string)
           ? (o.status as ScriptStatus)
           : 'Idea',
-        blocks: parseBlocks(o.blocks),
+        // A script always has somewhere to type.
+        blocks: blocks.length ? blocks : [emptyBlock()],
         updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : new Date().toISOString(),
       },
     ]
   })
 }
-
-/** Words across every block. A divider has no text, so it contributes nothing. */
-export const wordCount = (blocks: Block[]): number =>
-  blocks.reduce((n, b) => n + (b.text.trim() ? b.text.trim().split(/\s+/).length : 0), 0)
 
 /** Rounded up, and never "0 min" for a script that has words in it. */
 export const readingMinutes = (words: number): number => (words ? Math.max(1, Math.round(words / 150)) : 0)

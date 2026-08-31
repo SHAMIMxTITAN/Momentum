@@ -17,6 +17,22 @@ import {
   parseItems,
   parseScripts,
   parseBlocks,
+  spanText,
+  sliceSpans,
+  normalizeSpans,
+  concatSpans,
+  applyMark,
+  hasMark,
+  flattenBlocks,
+  indentBlock,
+  outdentBlock,
+  moveBlock,
+  removeBlock,
+  insertAfter,
+  duplicateBlock,
+  blockAbove,
+  type Block,
+  type Span,
   wordCount,
   readingMinutes,
   relativeTime,
@@ -513,7 +529,7 @@ test('parseScripts fills defaults and never leaves a script with nowhere to type
   assert.equal(s.title, 'Intro hook')
   assert.equal(s.status, 'Idea')
   assert.equal(s.blocks.length, 1, 'an empty script still gets one block')
-  assert.equal(s.blocks[0].type, 'p')
+  assert.equal(s.blocks[0].type, 'paragraph')
   assert.ok(s.updatedAt)
 
   const [bad] = parseScripts([{ title: 'x', status: 'Publishing' }])
@@ -522,35 +538,6 @@ test('parseScripts fills defaults and never leaves a script with nowhere to type
   assert.equal(parseScripts([null, 5, 'x']).length, 0)
 })
 
-test('parseBlocks clamps indent, drops junk types and keeps checked only on todos', () => {
-  const blocks = parseBlocks([
-    { type: 'h1', text: 'Title' },
-    { type: 'script', text: 'unknown type' },
-    { type: 'todo', text: 'a', checked: true },
-    { type: 'bullet', text: 'b', checked: true },
-    { type: 'bullet', text: 'c', indent: 99 },
-    { type: 'bullet', text: 'd', indent: -4 },
-  ])
-  assert.equal(blocks[0].type, 'h1')
-  assert.equal(blocks[1].type, 'p', 'unknown block type degrades to a paragraph')
-  assert.equal(blocks[2].checked, true)
-  assert.equal(blocks[3].checked, undefined, 'checked is meaningless off a todo')
-  assert.equal(blocks[4].indent, 3, 'indent clamps to 3')
-  assert.equal(blocks[5].indent, undefined, 'negative indent clamps to 0')
-})
-
-test('word count and reading time', () => {
-  const blocks = parseBlocks([
-    { type: 'p', text: 'one two three' },
-    { type: 'divider', text: '' },
-    { type: 'p', text: '   ' },
-  ])
-  assert.equal(wordCount(blocks), 3)
-  assert.equal(readingMinutes(0), 0, 'an empty script is not "1 min"')
-  assert.equal(readingMinutes(150), 1)
-  assert.equal(readingMinutes(10), 1, 'a few words still round up to a minute')
-  assert.equal(readingMinutes(450), 3)
-})
 
 test('relativeTime', () => {
   const now = new Date('2026-08-29T12:00:00')
@@ -558,4 +545,232 @@ test('relativeTime', () => {
   assert.equal(relativeTime('2026-08-29T10:00:00', now), '2 hours ago')
   assert.equal(relativeTime('2026-08-28T12:00:00', now), 'yesterday')
   assert.equal(relativeTime('nonsense', now), '', 'a junk timestamp renders nothing')
+})
+
+/* ------------------------------------------------------------ span algebra */
+
+const plain = (t: string): Span[] => [{ text: t }]
+
+test('sliceSpans cuts across runs and keeps each run its marks', () => {
+  const c: Span[] = [{ text: 'Hello ' }, { text: 'brave', bold: true }, { text: ' world' }]
+  assert.equal(spanText(c), 'Hello brave world')
+  assert.equal(spanText(sliceSpans(c, 0, 5)), 'Hello')
+  assert.equal(spanText(sliceSpans(c, 6)), 'brave world')
+
+  // a cut through the middle of the bold run keeps only that part bold
+  const mid = sliceSpans(c, 4, 9)
+  assert.equal(spanText(mid), 'o bra')
+  assert.deepEqual(
+    mid.map((s) => [s.text, s.bold ?? false]),
+    [
+      ['o ', false],
+      ['bra', true],
+    ],
+  )
+  assert.equal(spanText(sliceSpans(c, 5, 5)), '', 'an empty range is empty')
+})
+
+test('normalizeSpans drops empties and coalesces identical neighbours', () => {
+  const out = normalizeSpans([
+    { text: 'a' },
+    { text: '' },
+    { text: 'b' },
+    { text: 'c', bold: true },
+    { text: 'd', bold: true },
+  ])
+  assert.equal(out.length, 2, 'ab + cd')
+  assert.deepEqual(out[0], { text: 'ab' })
+  assert.equal(out[1].text, 'cd')
+  assert.equal(out[1].bold, true)
+})
+
+test('applyMark splits runs at the boundaries and can clear again', () => {
+  const c = plain('Hello world')
+  const bolded = applyMark(c, 0, 5, 'bold', true)
+  assert.deepEqual(
+    bolded.map((s) => [s.text, s.bold ?? false]),
+    [
+      ['Hello', true],
+      [' world', false],
+    ],
+  )
+  assert.equal(spanText(bolded), 'Hello world', 'marking never changes the text')
+
+  const cleared = applyMark(bolded, 0, 5, 'bold', false)
+  assert.equal(cleared.length, 1, 'clearing lets the runs merge back into one')
+  assert.equal(cleared[0].bold, undefined)
+
+  // a highlight over a bold run keeps both marks
+  const both = applyMark(bolded, 0, 5, 'bg', 'yellow')
+  assert.equal(both[0].bold, true)
+  assert.equal(both[0].bg, 'yellow')
+})
+
+test('hasMark is true only when the whole range carries it', () => {
+  const c = applyMark(plain('Hello world'), 0, 5, 'bold', true)
+  assert.equal(hasMark(c, 0, 5, 'bold'), true)
+  assert.equal(hasMark(c, 0, 7, 'bold'), false, 'part of the range is unbold')
+  assert.equal(hasMark(c, 6, 11, 'bold'), false)
+  assert.equal(hasMark(c, 3, 3, 'bold'), false, 'an empty range is not "all marked"')
+})
+
+test('concatSpans joins and coalesces — the Backspace merge case', () => {
+  const a = applyMark(plain('one'), 0, 3, 'bold', true)
+  const b = applyMark(plain('two'), 0, 3, 'bold', true)
+  const joined = concatSpans(a, b)
+  assert.equal(spanText(joined), 'onetwo')
+  assert.equal(joined.length, 1, 'same marks either side means one run, not two')
+})
+
+/* --------------------------------------------------- v1 migration + parsing */
+
+test('parseBlocks turns v1 flat text and indents into a tree of spans', () => {
+  const v1 = [
+    { id: 'a', type: 'h1', text: 'Hook' },
+    { id: 'b', type: 'bullet', text: 'top', indent: 0 },
+    { id: 'c', type: 'bullet', text: 'nested', indent: 1 },
+    { id: 'd', type: 'bullet', text: 'deeper', indent: 2 },
+    { id: 'e', type: 'p', text: 'back to root', indent: 0 },
+  ]
+  const tree = parseBlocks(v1)
+  assert.equal(tree.length, 3, 'h1, the top bullet, and the paragraph')
+  assert.equal(tree[0].type, 'h1')
+  assert.deepEqual(tree[0].content, [{ text: 'Hook' }], 'v1 text becomes one span')
+  assert.equal(tree[1].children.length, 1, 'indent 1 nests under the bullet above')
+  assert.equal(tree[1].children[0].children.length, 1, 'indent 2 nests one deeper')
+  assert.equal(spanText(tree[1].children[0].children[0].content), 'deeper')
+  assert.equal(tree[2].type, 'paragraph', 'v1 "p" is renamed')
+})
+
+test('parseBlocks renames v1 types and turns checklists into bullets', () => {
+  const tree = parseBlocks([
+    { type: 'p', text: 'a' },
+    { type: 'bullet', text: 'b' },
+    { type: 'number', text: 'c' },
+    { type: 'todo', text: 'd', checked: true },
+    { type: 'nonsense', text: 'e' },
+  ])
+  assert.deepEqual(
+    tree.map((b) => b.type),
+    ['paragraph', 'bulleted', 'numbered', 'bulleted', 'paragraph'],
+  )
+})
+
+test('parseBlocks clamps an indent jump so a corrupt file cannot make a hole', () => {
+  const tree = parseBlocks([
+    { type: 'bulleted', text: 'root' },
+    { type: 'bulleted', text: 'jumps to 3', indent: 3 },
+  ])
+  assert.equal(tree.length, 1)
+  assert.equal(tree[0].children.length, 1, 'a jump of three levels lands one level in')
+})
+
+test('parseBlocks reads the new shape and rejects junk spans', () => {
+  const tree = parseBlocks([
+    {
+      id: 'x',
+      type: 'h2',
+      content: [{ text: 'kept', bold: true }, { text: '' }, { nope: 1 }, 'string'],
+      children: [{ type: 'bulleted', content: [{ text: 'child' }] }],
+    },
+  ])
+  assert.equal(tree[0].type, 'h2')
+  assert.deepEqual(tree[0].content, [{ text: 'kept', bold: true }])
+  assert.equal(tree[0].children.length, 1)
+  assert.equal(spanText(tree[0].children[0].content), 'child')
+})
+
+test('wordCount and flattenBlocks walk into children', () => {
+  const tree = parseBlocks([
+    { type: 'h1', text: 'one two' },
+    { type: 'bulleted', text: 'three', indent: 0 },
+    { type: 'bulleted', text: 'four five', indent: 1 },
+    { type: 'divider', text: '' },
+  ])
+  assert.equal(flattenBlocks(tree).length, 4, 'the nested child is in the flat walk')
+  assert.deepEqual(
+    flattenBlocks(tree).map((f) => f.depth),
+    [0, 0, 1, 0],
+  )
+  assert.equal(wordCount(tree), 5)
+  assert.equal(readingMinutes(0), 0)
+  assert.equal(readingMinutes(10), 1)
+  assert.equal(readingMinutes(450), 3)
+})
+
+/* --------------------------------------------------------- block tree ops */
+
+const tree3 = () =>
+  parseBlocks([
+    { id: 'a', type: 'bulleted', content: [{ text: 'a' }] },
+    { id: 'b', type: 'bulleted', content: [{ text: 'b' }] },
+    { id: 'c', type: 'bulleted', content: [{ text: 'c' }] },
+  ])
+
+const outline = (t: Block[]): string =>
+  flattenBlocks(t)
+    .map((f) => '  '.repeat(f.depth) + spanText(f.block.content))
+    .join('\n')
+
+test('indentBlock nests under the sibling above; the first child cannot indent', () => {
+  const t = indentBlock(tree3(), 'b')
+  assert.equal(outline(t), 'a\n  b\nc')
+  assert.equal(outline(indentBlock(t, 'a')), outline(t), 'nothing above a, so it stays put')
+  // b is now the only child of a, so it has no sibling above it either
+  assert.equal(outline(indentBlock(t, 'b')), outline(t))
+})
+
+test('indent twice nests two deep, and outdent walks back out', () => {
+  let t = indentBlock(tree3(), 'b')
+  t = indentBlock(t, 'c')
+  assert.equal(outline(t), 'a\n  b\n  c', 'c joins b under a')
+  t = indentBlock(t, 'c')
+  assert.equal(outline(t), 'a\n  b\n    c', 'now under b')
+  t = outdentBlock(t, 'c')
+  assert.equal(outline(t), 'a\n  b\n  c')
+  t = outdentBlock(t, 'c')
+  assert.equal(outline(t), 'a\n  b\nc')
+  assert.equal(outline(outdentBlock(t, 'a')), outline(t), 'a root block has nowhere to go')
+})
+
+test('indent carries children along', () => {
+  let t = indentBlock(tree3(), 'c') // c under b
+  t = indentBlock(t, 'b') // b (with c) under a
+  assert.equal(outline(t), 'a\n  b\n    c')
+})
+
+test('moveBlock swaps with a sibling and stops at the ends', () => {
+  assert.equal(outline(moveBlock(tree3(), 'a', 1)), 'b\na\nc')
+  assert.equal(outline(moveBlock(tree3(), 'c', -1)), 'a\nc\nb')
+  assert.equal(outline(moveBlock(tree3(), 'a', -1)), 'a\nb\nc', 'already at the top')
+  assert.equal(outline(moveBlock(tree3(), 'c', 1)), 'a\nb\nc', 'already at the bottom')
+})
+
+test('moveBlock reorders inside a nested list, not the root', () => {
+  let t = indentBlock(tree3(), 'b')
+  t = indentBlock(t, 'c')
+  assert.equal(outline(t), 'a\n  b\n  c')
+  assert.equal(outline(moveBlock(t, 'c', -1)), 'a\n  c\n  b')
+})
+
+test('remove, insertAfter and duplicate', () => {
+  assert.equal(outline(removeBlock(tree3(), 'b')), 'a\nc')
+  const one = parseBlocks([{ id: 'z', type: 'paragraph', content: [{ text: 'z' }] }])
+  assert.equal(outline(insertAfter(tree3(), 'a', one)), 'a\nz\nb\nc')
+
+  const dup = duplicateBlock(indentBlock(tree3(), 'b'), 'a')
+  assert.equal(
+    outline(dup),
+    ['a', '  b', 'a', '  b', 'c'].join('\n'),
+    'a copy brings its children',
+  )
+  const ids = flattenBlocks(dup).map((f) => f.block.id)
+  assert.equal(new Set(ids).size, ids.length, 'every copied block gets a fresh id')
+})
+
+test('blockAbove follows what is on screen, not the sibling order', () => {
+  const t = indentBlock(tree3(), 'b')
+  assert.equal(blockAbove(t, 'b')?.id, 'a')
+  assert.equal(blockAbove(t, 'c')?.id, 'b', 'the nested child is directly above c')
+  assert.equal(blockAbove(t, 'a'), null)
 })

@@ -44,6 +44,23 @@ import {
   groupPayments,
   monthlySpend,
   isDone,
+  MARKS,
+  spanText,
+  sliceSpans,
+  concatSpans,
+  normalizeSpans,
+  applyMark,
+  hasMark,
+  flattenBlocks,
+  mapBlock,
+  findBlock,
+  removeBlock,
+  insertAfter,
+  indentBlock,
+  outdentBlock,
+  moveBlock,
+  duplicateBlock,
+  blockAbove,
   SCRIPT_STATUSES,
   emptyBlock,
   wordCount,
@@ -72,6 +89,8 @@ import {
   type ScriptStatus,
   type Block,
   type BlockType,
+  type Span,
+  type Mark,
   type When,
 } from './store'
 import { useTheme } from './theme'
@@ -2058,190 +2077,560 @@ const STATUS_COLOR: Record<ScriptStatus, string> = {
 }
 
 /**
- * Caret position as a plain character offset. `Selection` speaks in nodes; every edit
- * here speaks in string offsets, so the two are converted at the boundary and nowhere
- * else.
+ * Notion's palette, as tokens rather than raw hex: text colours are the accent itself,
+ * highlights are the same hue at low alpha so they sit under text in either theme.
+ * 'default' means "no mark", which is how the picker clears one.
  */
-function caretOffset(el: HTMLElement): number {
-  const sel = getSelection()
-  if (!sel || !sel.rangeCount) return 0
-  const range = sel.getRangeAt(0)
-  const probe = range.cloneRange()
-  probe.selectNodeContents(el)
-  probe.setEnd(range.endContainer, range.endOffset)
-  return probe.toString().length
+const TEXT_COLORS: Record<string, string> = {
+  default: 'inherit',
+  gray: '#8E8E93',
+  brown: '#A2845E',
+  orange: '#FF9500',
+  yellow: '#E6B800',
+  green: '#34C759',
+  blue: '#007AFF',
+  purple: '#AF52DE',
+  pink: '#FF2D55',
+  red: '#FF3B30',
 }
 
-function setCaret(el: HTMLElement, offset: number) {
-  const node = el.firstChild
-  const range = document.createRange()
-  if (node && node.nodeType === Node.TEXT_NODE) {
-    range.setStart(node, Math.min(offset, node.textContent?.length ?? 0))
-  } else {
-    range.setStart(el, 0)
-  }
-  range.collapse(true)
-  const sel = getSelection()
-  sel?.removeAllRanges()
-  sel?.addRange(range)
+const HIGHLIGHTS: Record<string, string> = {
+  default: 'transparent',
+  gray: '#8E8E9333',
+  brown: '#A2845E33',
+  orange: '#FF950033',
+  yellow: '#E6B80040',
+  green: '#34C75933',
+  blue: '#007AFF33',
+  purple: '#AF52DE33',
+  pink: '#FF2D5533',
+  red: '#FF3B3033',
 }
 
-/** Typed at the very start of a block, these become the block type. */
+const COLOR_NAMES = Object.keys(TEXT_COLORS)
+
+/**
+ * More space above a heading than below it, so a heading reads as belonging to the text
+ * under it rather than floating between two paragraphs. Notion's proportions: 1.875 /
+ * 1.5 / 1.25 em against a 16px body.
+ */
+const BLOCK_CLASS: Record<BlockType, string> = {
+  paragraph: 'text-[16px] leading-[1.65]',
+  h1: 'text-[30px] font-bold tracking-tight leading-[1.3]',
+  h2: 'text-[24px] font-semibold tracking-tight leading-[1.3]',
+  h3: 'text-[20px] font-semibold tracking-tight leading-[1.35]',
+  bulleted: 'text-[16px] leading-[1.65]',
+  numbered: 'text-[16px] leading-[1.65]',
+  quote: 'text-[16px] leading-[1.65]',
+  code: 'text-[14px] leading-[1.6] font-mono whitespace-pre-wrap',
+  divider: '',
+  toggle: 'text-[16px] leading-[1.65]',
+  callout: 'text-[16px] leading-[1.65]',
+}
+
+const BLOCK_SPACING: Record<BlockType, string> = {
+  paragraph: 'mt-[2px]',
+  h1: 'mt-8',
+  h2: 'mt-6',
+  h3: 'mt-4',
+  bulleted: 'mt-[2px]',
+  numbered: 'mt-[2px]',
+  quote: 'mt-2',
+  code: 'mt-2',
+  divider: 'my-2',
+  toggle: 'mt-[2px]',
+  callout: 'mt-2',
+}
+
+const PLACEHOLDER: Partial<Record<BlockType, string>> = {
+  h1: 'Heading 1',
+  h2: 'Heading 2',
+  h3: 'Heading 3',
+  quote: 'Quote',
+  code: 'Code',
+}
+
+/** Typed at the start of a block, these become the block type. */
 const BLOCK_SHORTCUTS: [RegExp, BlockType][] = [
   [/^# $/, 'h1'],
   [/^## $/, 'h2'],
   [/^### $/, 'h3'],
-  [/^[-*] $/, 'bullet'],
-  [/^1\. $/, 'number'],
-  [/^\[[ x]?\] $/, 'todo'],
+  [/^[-*] $/, 'bulleted'],
+  [/^1\. $/, 'numbered'],
   [/^> $/, 'quote'],
   [/^```$/, 'code'],
   [/^--- $/, 'divider'],
 ]
 
-const LIST_TYPES: BlockType[] = ['bullet', 'number', 'todo']
+/** Closing-character conversions. Group 1 is the text that survives. */
+const INLINE_RULES: [RegExp, Mark][] = [
+  [/\*\*([^*]+)\*\*$/, 'bold'],
+  [/(?<!\*)\*([^*]+)\*$/, 'italic'],
+  [/~~([^~]+)~~$/, 'strike'],
+  [/`([^`]+)`$/, 'code'],
+]
 
-const BLOCK_CLASS: Record<BlockType, string> = {
-  p: 'text-[17px] leading-relaxed',
-  h1: 'text-[28px] font-semibold tracking-tight leading-snug',
-  h2: 'text-[22px] font-semibold tracking-tight leading-snug',
-  h3: 'text-[18px] font-semibold tracking-tight leading-snug',
-  bullet: 'text-[17px] leading-relaxed',
-  number: 'text-[17px] leading-relaxed',
-  todo: 'text-[17px] leading-relaxed',
-  quote: 'text-[17px] leading-relaxed text-[var(--muted)]',
-  code: 'text-[14px] leading-relaxed font-mono whitespace-pre-wrap',
-  divider: '',
-}
+const LIST_TYPES: BlockType[] = ['bulleted', 'numbered']
+const TEXT_BLOCKS: BlockType[] = [
+  'paragraph',
+  'h1',
+  'h2',
+  'h3',
+  'bulleted',
+  'numbered',
+  'quote',
+  'code',
+]
+
+const SLASH_ITEMS: { type: BlockType; name: string; desc: string; icon: string }[] = [
+  { type: 'paragraph', name: 'Text', desc: 'Plain paragraph', icon: 'T' },
+  { type: 'h1', name: 'Heading 1', desc: 'Major section', icon: 'H1' },
+  { type: 'h2', name: 'Heading 2', desc: 'Sub-section', icon: 'H2' },
+  { type: 'h3', name: 'Heading 3', desc: 'Sub-sub-section', icon: 'H3' },
+  { type: 'bulleted', name: 'Bulleted list', desc: 'Beat-by-beat points', icon: '•' },
+  { type: 'numbered', name: 'Numbered list', desc: 'Ordered steps', icon: '1.' },
+  { type: 'quote', name: 'Quote', desc: 'Set a line apart', icon: '"' },
+  { type: 'code', name: 'Code', desc: 'Monospaced block', icon: '</>' },
+  { type: 'divider', name: 'Divider', desc: 'Section break', icon: '—' },
+]
+
+/* ---- selection <-> character offsets -------------------------------------- */
 
 /**
- * One block, one contenteditable. React never owns the innerHTML: the DOM is written
- * only when the model and the element disagree, which during plain typing they never do
- * because the model is read *from* the element. That is what stops the caret jumping —
- * a controlled contenteditable resets the selection on every keystroke.
+ * Absolute character offset of (node, offset) within a block element.
+ *
+ * Measured with a Range rather than by walking text nodes: when the caret sits on an
+ * *element* rather than a text node — which is where the browser leaves it after we
+ * rewrite a block — `offset` counts child nodes, not characters. Range.toString() is the
+ * one reading that is right for both cases.
  */
+function offsetIn(root: HTMLElement, node: Node, offset: number): number {
+  const probe = document.createRange()
+  probe.selectNodeContents(root)
+  try {
+    probe.setEnd(node, offset)
+  } catch {
+    return 0
+  }
+  return probe.toString().length
+}
+
+/** The (node, offset) pair for an absolute character index. */
+function pointAt(root: HTMLElement, index: number): [Node, number] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let total = 0
+  let n = walker.nextNode()
+  while (n) {
+    const len = n.textContent?.length ?? 0
+    if (total + len >= index) return [n, index - total]
+    total += len
+    n = walker.nextNode()
+  }
+  return [root, 0]
+}
+
+function blockEl(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-block="${id}"]`)
+}
+
+/** Caret offsets inside one block, or null when the selection is elsewhere. */
+function selectionIn(root: HTMLElement): { from: number; to: number } | null {
+  const sel = getSelection()
+  if (!sel || !sel.rangeCount) return null
+  const r = sel.getRangeAt(0)
+  if (!root.contains(r.startContainer) || !root.contains(r.endContainer)) return null
+  const from = offsetIn(root, r.startContainer, r.startOffset)
+  const to = offsetIn(root, r.endContainer, r.endOffset)
+  return from <= to ? { from, to } : { from: to, to: from }
+}
+
+function placeCaret(root: HTMLElement, from: number, to: number = from) {
+  const [sn, so] = pointAt(root, from)
+  const [en, eo] = pointAt(root, to)
+  const range = document.createRange()
+  range.setStart(sn, so)
+  range.setEnd(en, eo)
+  const sel = getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+}
+
+/* ---- DOM <-> spans -------------------------------------------------------- */
+
+/** Read a block element back into spans, taking marks off the data attributes. */
+function readSpans(root: HTMLElement): Span[] {
+  const out: Span[] = []
+  const walk = (node: Node, inherited: Partial<Span>) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = child.textContent ?? ''
+        if (text) out.push({ ...inherited, text })
+      } else if (child instanceof HTMLElement) {
+        if (child.tagName === 'BR') continue
+        const marks: Partial<Span> = { ...inherited }
+        const flags = child.dataset.m ?? ''
+        if (flags.includes('b')) marks.bold = true
+        if (flags.includes('i')) marks.italic = true
+        if (flags.includes('u')) marks.underline = true
+        if (flags.includes('s')) marks.strike = true
+        if (flags.includes('c')) marks.code = true
+        if (child.dataset.color) marks.color = child.dataset.color
+        if (child.dataset.bg) marks.bg = child.dataset.bg
+        walk(child, marks)
+      }
+    }
+  }
+  walk(root, {})
+  return normalizeSpans(out)
+}
+
+const markFlags = (s: Span): string =>
+  `${s.bold ? 'b' : ''}${s.italic ? 'i' : ''}${s.underline ? 'u' : ''}${s.strike ? 's' : ''}${
+    s.code ? 'c' : ''
+  }`
+
+function spanStyle(s: Span): React.CSSProperties {
+  const style: React.CSSProperties = {}
+  if (s.bold) style.fontWeight = 600
+  if (s.italic) style.fontStyle = 'italic'
+  if (s.underline || s.strike)
+    style.textDecoration = `${s.underline ? 'underline' : ''} ${s.strike ? 'line-through' : ''}`.trim()
+  if (s.color && s.color !== 'default') style.color = TEXT_COLORS[s.color] ?? undefined
+  if (s.bg && s.bg !== 'default') style.background = HIGHLIGHTS[s.bg] ?? undefined
+  if (s.code) {
+    style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace'
+    style.fontSize = '0.9em'
+    style.background = style.background ?? 'var(--card-2)'
+    style.borderRadius = '4px'
+    style.padding = '0.1em 0.3em'
+  }
+  return style
+}
+
+function SpanRun({ span }: { span: Span }) {
+  return (
+    <span
+      data-m={markFlags(span) || undefined}
+      data-color={span.color}
+      data-bg={span.bg}
+      style={spanStyle(span)}
+    >
+      {span.text}
+    </span>
+  )
+}
+
+/* ---- list markers ---------------------------------------------------------- */
+
+const BULLETS = ['•', '◦', '▪']
+const ROMAN: [number, string][] = [
+  [10, 'x'],
+  [9, 'ix'],
+  [5, 'v'],
+  [4, 'iv'],
+  [1, 'i'],
+]
+
+const toRoman = (n: number): string => {
+  let out = ''
+  let left = n
+  for (const [value, sym] of ROMAN) {
+    while (left >= value) {
+      out += sym
+      left -= value
+    }
+  }
+  return out || 'i'
+}
+
+/** 1. at root, a. one level in, i. two levels in — then it repeats. */
+function numberLabel(n: number, depth: number): string {
+  const level = depth % 3
+  if (level === 0) return `${n}.`
+  if (level === 1) return `${String.fromCharCode(96 + ((n - 1) % 26) + 1)}.`
+  return `${toRoman(n)}.`
+}
+
+/* ---- the editor ------------------------------------------------------------ */
+
+type Cmd = { id: string; from: number; to?: number }
+
 function EditorBlock({
   block,
+  depth,
   index,
-  onText,
-  onEnter,
-  onBackspaceAtStart,
-  onIndent,
-  onCheck,
-  onDelete,
+  onSpans,
+  onKey,
+  onFocus,
+  focusedId,
 }: {
   block: Block
+  depth: number
   index: number
-  onText: (text: string) => void
-  onEnter: (offset: number) => void
-  onBackspaceAtStart: () => void
-  onIndent: (delta: number) => void
-  onCheck: () => void
-  onDelete: () => void
+  onSpans: (id: string, content: Span[]) => void
+  onKey: (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => void
+  onFocus: (id: string) => void
+  focusedId: string | null
 }) {
   const ref = useRef<HTMLDivElement>(null)
 
   /**
-   * Invariant: the DOM mirrors the model. Deliberately runs on *every* render with no
-   * dependency array — a markdown shortcut sets the text to '' when it was already '',
-   * so a `[block.text]` dependency never fires and the typed "# " is left behind in the
-   * heading. Typing costs nothing here because the model is read from the DOM, so the
-   * two already agree and no write happens.
-   *
-   * Layout, not passive: child layout effects run before the parent's, which is what
-   * lets ScriptEditor place the caret *after* this has rewritten the text.
+   * The DOM mirrors the model. Runs on every render with no dependency array: a markdown
+   * shortcut can leave the content unchanged by value while the DOM still holds the typed
+   * prefix, and a dependency would not fire. Typing costs nothing because the model is
+   * read *from* the DOM, so the two already agree. Layout, not passive, so the parent can
+   * place the caret afterwards.
    */
   useLayoutEffect(() => {
     const el = ref.current
-    if (el && el.textContent !== block.text) el.textContent = block.text
+    if (!el) return
+    // Compare the spans, not just their text: bolding a selection leaves the text
+    // identical, and a text-only check would skip the repaint and make every mark
+    // and colour appear to do nothing.
+    if (JSON.stringify(readSpans(el)) === JSON.stringify(block.content)) return
+    el.textContent = ''
+    for (const s of block.content) {
+      const node = document.createElement('span')
+      const flags = markFlags(s)
+      if (flags) node.dataset.m = flags
+      if (s.color) node.dataset.color = s.color
+      if (s.bg) node.dataset.bg = s.bg
+      Object.assign(node.style, spanStyle(s) as Record<string, string>)
+      node.textContent = s.text
+      el.appendChild(node)
+    }
   })
 
   if (block.type === 'divider') {
     return (
-      <div className="group flex items-center gap-2 py-3">
-        <div className="h-px flex-1" style={{ background: 'var(--separator)' }} />
-        <button
-          onClick={onDelete}
-          aria-label="Delete divider"
-          className="shrink-0 p-1 text-[var(--faint)] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[#FF3B30]"
-        >
-          <X size={14} />
-        </button>
+      <div className={BLOCK_SPACING.divider} style={{ marginLeft: depth * 26 }}>
+        <div className="h-px" style={{ background: 'var(--separator)' }} />
       </div>
     )
   }
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const el = e.currentTarget
-    if (e.key === 'Enter' && !e.shiftKey) {
-      // A code block keeps Enter for itself — that is the one place a newline is content.
-      // Except on an empty one, or there is no way back out without a mouse.
-      if (block.type === 'code' && block.text) return
-      e.preventDefault()
-      onEnter(caretOffset(el))
-      return
-    }
-    if (e.key === 'Backspace' && caretOffset(el) === 0 && getSelection()?.isCollapsed) {
-      e.preventDefault()
-      onBackspaceAtStart()
-      return
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      onIndent(e.shiftKey ? -1 : 1)
-    }
-  }
+  const empty = !spanText(block.content)
+  const placeholder =
+    empty && focusedId === block.id ? (PLACEHOLDER[block.type] ?? "Type '/' for commands") : ''
 
   const marker =
-    block.type === 'bullet' ? (
-      <span className="shrink-0 pt-[3px] text-[var(--muted)] select-none">•</span>
-    ) : block.type === 'number' ? (
-      <span className="shrink-0 pt-[1px] text-[15px] text-[var(--muted)] tabular-nums select-none">
-        {index}.
+    block.type === 'bulleted' ? (
+      <span className="w-4 shrink-0 pt-[2px] text-center text-[var(--muted)] select-none">
+        {BULLETS[depth % 3]}
       </span>
-    ) : block.type === 'todo' ? (
-      <button
-        onClick={onCheck}
-        aria-label={block.checked ? 'Mark not done' : 'Mark done'}
-        className="mt-[3px] grid size-[18px] shrink-0 place-items-center rounded-[5px] border-2 transition-colors"
-        style={
-          block.checked
-            ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
-            : { borderColor: 'var(--faint)' }
-        }
-      >
-        {block.checked && <Check size={11} strokeWidth={3} />}
-      </button>
+    ) : block.type === 'numbered' ? (
+      <span className="w-5 shrink-0 pt-[1px] text-[15px] text-[var(--muted)] tabular-nums select-none">
+        {numberLabel(index, depth)}
+      </span>
     ) : null
 
   return (
-    <div
-      className="flex gap-2"
-      style={{ paddingLeft: (block.indent ?? 0) * 24, paddingTop: 2, paddingBottom: 2 }}
-    >
-      {marker}
-      {block.type === 'quote' && (
-        <div className="w-[3px] shrink-0 rounded-full" style={{ background: 'var(--faint)' }} />
-      )}
-      <div
-        ref={ref}
-        data-block={block.id}
-        contentEditable
-        suppressContentEditableWarning
-        role="textbox"
-        aria-label={`Block ${index}`}
-        onInput={(e) => onText(e.currentTarget.textContent ?? '')}
-        onKeyDown={onKeyDown}
-        className={`min-w-0 flex-1 outline-none ${BLOCK_CLASS[block.type]} ${
-          block.type === 'code' ? 'rounded-xl bg-[var(--card)] px-3 py-2' : ''
-        }`}
-        style={
-          block.checked
-            ? { textDecoration: 'line-through', color: 'var(--muted)' }
-            : undefined
-        }
-      />
+    <div className={BLOCK_SPACING[block.type]} style={{ marginLeft: depth * 26 }}>
+      <div className="flex gap-1.5">
+        {marker}
+        {block.type === 'quote' && (
+          <div className="w-[3px] shrink-0 rounded-full" style={{ background: 'var(--faint)' }} />
+        )}
+        <div
+          ref={ref}
+          data-block={block.id}
+          data-ph={placeholder || undefined}
+          contentEditable
+          suppressContentEditableWarning
+          role="textbox"
+          onInput={() => ref.current && onSpans(block.id, readSpans(ref.current))}
+          onKeyDown={(e) => onKey(e, block, depth)}
+          onFocus={() => onFocus(block.id)}
+          className={`min-w-0 flex-1 outline-none ${BLOCK_CLASS[block.type]} ${
+            block.type === 'code' ? 'rounded-xl bg-[var(--card)] px-3 py-2' : ''
+          } ${block.type === 'quote' ? 'pl-2 text-[var(--muted)]' : ''} empty:before:text-[var(--ghost)] before:content-[attr(data-ph)] before:pointer-events-none before:absolute`}
+          style={{ position: 'relative' }}
+        />
+      </div>
     </div>
+  )
+}
+
+function SlashMenu({
+  filter,
+  active,
+  onPick,
+}: {
+  filter: string
+  active: number
+  onPick: (type: BlockType) => void
+}) {
+  const items = SLASH_ITEMS.filter((i) =>
+    (i.name + i.type).toLowerCase().includes(filter.toLowerCase()),
+  )
+  if (!items.length) return null
+  return (
+    <div className="absolute z-30 mt-1 w-72 overflow-hidden rounded-2xl bg-[var(--card)] py-1.5 shadow-lg">
+      <p className="px-3 py-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
+        Basic blocks
+      </p>
+      {items.map((it, i) => (
+        <button
+          key={it.type}
+          onPointerDown={(e) => {
+            e.preventDefault()
+            onPick(it.type)
+          }}
+          className="flex w-full items-center gap-3 px-3 py-1.5 text-left"
+          style={i === active % items.length ? { background: 'var(--card-2)' } : undefined}
+        >
+          <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[var(--card-2)] text-[12px] font-semibold text-[var(--muted)]">
+            {it.icon}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-[15px] tracking-tight">{it.name}</span>
+            <span className="block truncate text-[12px] text-[var(--muted)]">{it.desc}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SelectionToolbar({
+  rect,
+  marks,
+  onMark,
+  onTurn,
+  onColor,
+}: {
+  rect: { top: number; left: number }
+  marks: Record<Mark, boolean>
+  onMark: (m: Mark) => void
+  onTurn: (t: BlockType) => void
+  onColor: (kind: 'color' | 'bg', name: string) => void
+}) {
+  const [menu, setMenu] = useState<'turn' | 'color' | null>(null)
+  const Btn = ({ m, label }: { m: Mark; label: React.ReactNode }) => (
+    <button
+      onPointerDown={(e) => {
+        e.preventDefault()
+        onMark(m)
+      }}
+      className="grid size-7 place-items-center rounded-md text-[13px]"
+      style={marks[m] ? { color: '#007AFF' } : undefined}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div
+      className="fixed z-40 flex items-center gap-0.5 rounded-xl bg-[var(--card)] px-1.5 py-1 shadow-lg"
+      style={{ top: rect.top, left: rect.left }}
+      onPointerDown={(e) => e.preventDefault()}
+    >
+      <button
+        onPointerDown={(e) => {
+          e.preventDefault()
+          setMenu(menu === 'turn' ? null : 'turn')
+        }}
+        className="rounded-md px-2 py-1 text-[13px] text-[var(--muted)]"
+      >
+        Turn into ▾
+      </button>
+      <span className="mx-1 h-4 w-px" style={{ background: 'var(--separator)' }} />
+      <Btn m="bold" label={<b>B</b>} />
+      <Btn m="italic" label={<i>I</i>} />
+      <Btn m="underline" label={<u>U</u>} />
+      <Btn m="strike" label={<s>S</s>} />
+      <Btn m="code" label={<span className="font-mono">{'<>'}</span>} />
+      <button
+        onPointerDown={(e) => {
+          e.preventDefault()
+          setMenu(menu === 'color' ? null : 'color')
+        }}
+        className="rounded-md px-2 py-1 text-[13px] text-[var(--muted)]"
+      >
+        Color ▾
+      </button>
+
+      {menu === 'turn' && (
+        <div className="absolute top-full left-0 mt-1 w-48 overflow-hidden rounded-xl bg-[var(--card)] py-1 shadow-lg">
+          {SLASH_ITEMS.filter((i) => i.type !== 'divider').map((i) => (
+            <button
+              key={i.type}
+              onPointerDown={(e) => {
+                e.preventDefault()
+                onTurn(i.type)
+                setMenu(null)
+              }}
+              className="block w-full px-3 py-1.5 text-left text-[14px]"
+            >
+              {i.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {menu === 'color' && (
+        <div className="absolute top-full right-0 mt-1 flex gap-3 rounded-xl bg-[var(--card)] p-2 shadow-lg">
+          {(['color', 'bg'] as const).map((kind) => (
+            <div key={kind}>
+              <p className="px-1 pb-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
+                {kind === 'color' ? 'Text' : 'Highlight'}
+              </p>
+              {COLOR_NAMES.map((name) => (
+                <button
+                  key={name}
+                  onPointerDown={(e) => {
+                    e.preventDefault()
+                    onColor(kind, name)
+                    setMenu(null)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] capitalize"
+                >
+                  <span
+                    className="grid size-4 shrink-0 place-items-center rounded border text-[10px] font-semibold"
+                    style={{
+                      borderColor: 'var(--separator)',
+                      background: kind === 'bg' ? HIGHLIGHTS[name] : 'transparent',
+                      color: kind === 'color' ? TEXT_COLORS[name] : 'var(--text)',
+                    }}
+                  >
+                    A
+                  </span>
+                  {name}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Renders a sibling list, keeping the numbered run per level. */
+function BlockList({
+  blocks,
+  depth,
+  ...rest
+}: {
+  blocks: Block[]
+  depth: number
+  onSpans: (id: string, content: Span[]) => void
+  onKey: (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => void
+  onFocus: (id: string) => void
+  focusedId: string | null
+}) {
+  let run = 0
+  return (
+    <>
+      {blocks.map((b) => {
+        run = b.type === 'numbered' ? run + 1 : 0
+        return (
+          <div key={b.id}>
+            <EditorBlock block={b} depth={depth} index={run} {...rest} />
+            {b.children.length > 0 && <BlockList blocks={b.children} depth={depth + 1} {...rest} />}
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -2257,10 +2646,22 @@ function ScriptEditor({
   const [blocks, setBlocks] = useState<Block[]>(script.blocks)
   const [title, setTitle] = useState(script.title)
   const [dirty, setDirty] = useState(false)
-  // Where the caret belongs once a structural edit has re-rendered.
-  const caret = useRef<{ id: string; offset: number } | null>(null)
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const [slash, setSlash] = useState<{ id: string; at: number; filter: string; active: number } | null>(null)
+  // Carries its own block id: keying the toolbar off a separately tracked focusedId meant
+  // a selection made without a fresh focus event never showed it.
+  const [toolbar, setToolbar] = useState<{
+    id: string
+    top: number
+    left: number
+    marks: Record<Mark, boolean>
+  } | null>(null)
 
-  // Autosave. The timer restarts on every keystroke, so it writes once the typing stops.
+  const caret = useRef<Cmd | null>(null)
+  const past = useRef<Block[][]>([])
+  const future = useRef<Block[][]>([])
+
+  // Autosave: the timer restarts on every keystroke, so it writes once typing stops.
   useEffect(() => {
     if (!dirty) return
     const t = setTimeout(() => {
@@ -2270,116 +2671,343 @@ function ScriptEditor({
     return () => clearTimeout(t)
   }, [dirty, blocks, title])
 
-  // Before paint, so the caret never visibly lands in the wrong place first.
+  // Before paint, so a caret never visibly lands in the wrong place first.
   useLayoutEffect(() => {
     const want = caret.current
     if (!want) return
     caret.current = null
-    const el = document.querySelector<HTMLElement>(`[data-block="${want.id}"]`)
+    const el = blockEl(want.id)
     if (el) {
       el.focus()
-      setCaret(el, want.offset)
+      placeCaret(el, want.from, want.to ?? want.from)
     }
   }, [blocks])
 
-  const edit = (next: Block[]) => {
+  // The floating toolbar follows any non-empty selection inside a block.
+  useEffect(() => {
+    const onSel = () => {
+      const sel = getSelection()
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return setToolbar(null)
+      // anchorNode is a text node while typing, but the block element itself right after
+      // we rewrite one — resolve from whichever it is before walking up.
+      const node = sel.anchorNode
+      const from = node instanceof HTMLElement ? node : (node?.parentElement ?? null)
+      const el = from?.closest('[data-block]')
+      if (!(el instanceof HTMLElement)) return setToolbar(null)
+      const range = selectionIn(el)
+      const block = findBlock(blocks, el.dataset.block ?? '')
+      if (!range || !block || range.from === range.to) return setToolbar(null)
+      const r = sel.getRangeAt(0).getBoundingClientRect()
+      const marks = Object.fromEntries(
+        MARKS.map((m) => [m, hasMark(block.content, range.from, range.to, m)]),
+      ) as Record<Mark, boolean>
+      setToolbar({ id: block.id, top: Math.max(r.top - 46, 8), left: Math.max(r.left, 8), marks })
+    }
+    document.addEventListener('selectionchange', onSel)
+    return () => document.removeEventListener('selectionchange', onSel)
+  }, [blocks])
+
+  const commit = (next: Block[], remember = true) => {
+    if (remember) {
+      past.current = [...past.current.slice(-99), blocks]
+      future.current = []
+    }
     setBlocks(next)
     setDirty(true)
   }
 
-  const patch = (id: string, p: Partial<Block>) =>
-    edit(blocks.map((b) => (b.id === id ? { ...b, ...p } : b)))
+  const setContent = (id: string, content: Span[]) =>
+    commit(mapBlock(blocks, id, (b) => ({ ...b, content })), false)
 
-  const onText = (b: Block, text: string) => {
+  const setType = (id: string, type: BlockType) =>
+    commit(mapBlock(blocks, id, (b) => ({ ...b, type, content: b.content })))
+
+  /** The live selection in a block, falling back to the caret. */
+  const rangeOf = (id: string) => {
+    const el = blockEl(id)
+    return el ? (selectionIn(el) ?? { from: 0, to: 0 }) : { from: 0, to: 0 }
+  }
+
+  const toggleMark = (id: string, mark: Mark) => {
+    const block = findBlock(blocks, id)
+    if (!block) return
+    const { from, to } = rangeOf(id)
+    if (from === to) return
+    const on = !hasMark(block.content, from, to, mark)
+    commit(mapBlock(blocks, id, (b) => ({ ...b, content: applyMark(b.content, from, to, mark, on) })))
+    caret.current = { id, from, to }
+  }
+
+  const setColor = (id: string, kind: 'color' | 'bg', name: string) => {
+    const { from, to } = rangeOf(id)
+    if (from === to) return
+    commit(
+      mapBlock(blocks, id, (b) => ({
+        ...b,
+        content: applyMark(b.content, from, to, kind, name === 'default' ? undefined : name),
+      })),
+    )
+    caret.current = { id, from, to }
+    setToolbar(null)
+  }
+
+  /** Block shortcut, then inline rule, then the slash trigger. */
+  const onSpans = (id: string, content: Span[]) => {
+    const text = spanText(content)
+    const el = blockEl(id)
+    const at = el ? (selectionIn(el)?.to ?? text.length) : text.length
+
     const shortcut = BLOCK_SHORTCUTS.find(([re]) => re.test(text))
-    if (!shortcut) return patch(b.id, { text })
+    if (shortcut) {
+      const [, type] = shortcut
+      if (type === 'divider') {
+        const fresh = emptyBlock()
+        commit(
+          insertAfter(
+            mapBlock(blocks, id, (b) => ({ ...b, type: 'divider', content: [] })),
+            id,
+            [fresh],
+          ),
+        )
+        caret.current = { id: fresh.id, from: 0 }
+        return
+      }
+      commit(mapBlock(blocks, id, (b) => ({ ...b, type, content: [] })))
+      caret.current = { id, from: 0 }
+      return
+    }
 
-    const [, type] = shortcut
+    for (const [re, mark] of INLINE_RULES) {
+      const m = re.exec(text.slice(0, at))
+      if (!m) continue
+      const start = at - m[0].length
+      const inner = m[1]
+      commit(
+        mapBlock(blocks, id, (b) => ({
+          ...b,
+          content: concatSpans(
+            sliceSpans(content, 0, start),
+            [{ text: inner, [mark]: true }],
+            sliceSpans(content, at),
+          ),
+        })),
+        false,
+      )
+      caret.current = { id, from: start + inner.length }
+      return
+    }
+
+    setContent(id, content)
+
+    // "/" at the start, or after a space, opens the menu.
+    const before = text.slice(0, at)
+    const hit = /(?:^|\s)\/([\w]*)$/.exec(before)
+    if (hit) setSlash({ id, at: at - hit[1].length - 1, filter: hit[1], active: 0 })
+    else if (slash?.id === id) setSlash(null)
+  }
+
+  const pickSlash = (type: BlockType) => {
+    if (!slash) return
+    const block = findBlock(blocks, slash.id)
+    if (!block) return
+    // Drop the "/query" that opened the menu.
+    const cleaned = concatSpans(
+      sliceSpans(block.content, 0, slash.at),
+      sliceSpans(block.content, slash.at + 1 + slash.filter.length),
+    )
     if (type === 'divider') {
-      // A divider holds no text, so typing continues in a fresh block under it.
       const fresh = emptyBlock()
-      const i = blocks.findIndex((x) => x.id === b.id)
-      const next = [...blocks]
-      next[i] = { ...b, type: 'divider', text: '', indent: undefined }
-      next.splice(i + 1, 0, fresh)
-      edit(next)
-      caret.current = { id: fresh.id, offset: 0 }
-      return
+      commit(
+        insertAfter(
+          mapBlock(blocks, slash.id, (b) => ({ ...b, type: 'divider', content: [] })),
+          slash.id,
+          [fresh],
+        ),
+      )
+      caret.current = { id: fresh.id, from: 0 }
+    } else {
+      commit(mapBlock(blocks, slash.id, (b) => ({ ...b, type, content: cleaned })))
+      caret.current = { id: slash.id, from: slash.at }
     }
-    edit(
-      blocks.map((x) =>
-        x.id === b.id
-          ? { ...x, type, text: '', checked: type === 'todo' ? false : undefined }
-          : x,
-      ),
-    )
-    caret.current = { id: b.id, offset: 0 }
+    setSlash(null)
   }
 
-  const onEnter = (b: Block, offset: number) => {
-    // Enter on an empty list item leaves the list rather than making another bullet.
-    if (!b.text && b.type !== 'p') {
-      patch(b.id, { type: 'p', indent: undefined, checked: undefined })
-      caret.current = { id: b.id, offset: 0 }
-      return
-    }
-    const carry: BlockType = LIST_TYPES.includes(b.type) ? b.type : 'p'
-    const fresh: Block = {
-      id: crypto.randomUUID(),
-      type: carry,
-      text: b.text.slice(offset),
-      indent: b.indent,
-      checked: carry === 'todo' ? false : undefined,
-    }
-    const i = blocks.findIndex((x) => x.id === b.id)
-    const next = [...blocks]
-    next[i] = { ...b, text: b.text.slice(0, offset) }
-    next.splice(i + 1, 0, fresh)
-    edit(next)
-    caret.current = { id: fresh.id, offset: 0 }
-  }
+  const onKey = (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => {
+    const meta = e.metaKey || e.ctrlKey
+    const id = block.id
+    const text = spanText(block.content)
+    const here = rangeOf(id)
 
-  const onBackspaceAtStart = (b: Block) => {
-    // Peel the formatting off before merging: one Backspace un-does the block type.
-    if (b.type !== 'p') {
-      patch(b.id, { type: 'p', indent: undefined, checked: undefined })
-      caret.current = { id: b.id, offset: 0 }
-      return
+    if (slash?.id === id) {
+      const items = SLASH_ITEMS.filter((i) =>
+        (i.name + i.type).toLowerCase().includes(slash.filter.toLowerCase()),
+      )
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const dir = e.key === 'ArrowDown' ? 1 : -1
+        return setSlash({ ...slash, active: (slash.active + dir + items.length) % items.length })
+      }
+      if (e.key === 'Enter' && items.length) {
+        e.preventDefault()
+        return pickSlash(items[slash.active % items.length].type)
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        return setSlash(null)
+      }
     }
-    if (b.indent) {
-      patch(b.id, { indent: b.indent - 1 || undefined })
-      caret.current = { id: b.id, offset: 0 }
-      return
-    }
-    const i = blocks.findIndex((x) => x.id === b.id)
-    if (i <= 0) return
-    const prev = blocks[i - 1]
-    if (prev.type === 'divider') {
-      edit(blocks.filter((x) => x.id !== prev.id))
-      caret.current = { id: b.id, offset: 0 }
-      return
-    }
-    const joinAt = prev.text.length
-    edit(
-      blocks
-        .filter((x) => x.id !== b.id)
-        .map((x) => (x.id === prev.id ? { ...x, text: prev.text + b.text } : x)),
-    )
-    caret.current = { id: prev.id, offset: joinAt }
-  }
 
-  const onIndent = (b: Block, delta: number) => {
-    if (!LIST_TYPES.includes(b.type)) return
-    const next = Math.min(Math.max((b.indent ?? 0) + delta, 0), 3)
-    patch(b.id, { indent: next || undefined })
-    caret.current = { id: b.id, offset: caretOffsetOf(b.id) }
+    if (meta && e.altKey) {
+      const map: Record<string, BlockType> = {
+        '0': 'paragraph',
+        '1': 'h1',
+        '2': 'h2',
+        '3': 'h3',
+        '5': 'bulleted',
+        '6': 'numbered',
+      }
+      const type = map[e.key]
+      if (type) {
+        e.preventDefault()
+        setType(id, type)
+        caret.current = { id, from: here.from }
+        return
+      }
+    }
+
+    if (meta && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault()
+      commit(moveBlock(blocks, id, e.key === 'ArrowUp' ? -1 : 1))
+      caret.current = { id, from: here.from }
+      return
+    }
+
+    if (meta && !e.shiftKey && e.key.toLowerCase() === 'd') {
+      e.preventDefault()
+      commit(duplicateBlock(blocks, id))
+      return
+    }
+
+    if (meta && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      if (e.shiftKey) {
+        const next = future.current.pop()
+        if (next) {
+          past.current = [...past.current, blocks]
+          setBlocks(next)
+          setDirty(true)
+        }
+      } else {
+        const prev = past.current.pop()
+        if (prev) {
+          future.current = [...future.current, blocks]
+          setBlocks(prev)
+          setDirty(true)
+        }
+      }
+      return
+    }
+
+    if (meta) {
+      const mark: Mark | null =
+        e.key.toLowerCase() === 'b' && !e.shiftKey
+          ? 'bold'
+          : e.key.toLowerCase() === 'i'
+            ? 'italic'
+            : e.key.toLowerCase() === 'u'
+              ? 'underline'
+              : e.shiftKey && e.key.toLowerCase() === 's'
+                ? 'strike'
+                : e.key.toLowerCase() === 'e'
+                  ? 'code'
+                  : null
+      if (mark) {
+        e.preventDefault()
+        toggleMark(id, mark)
+        return
+      }
+    }
+
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      commit(e.shiftKey ? outdentBlock(blocks, id) : indentBlock(blocks, id))
+      caret.current = { id, from: here.from }
+      return
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (block.type === 'code' && text) return // a newline is content in a code block
+      e.preventDefault()
+
+      // Empty and formatted: step out one level, then out of the type.
+      if (!text && block.type !== 'paragraph') {
+        if (depth > 0) commit(outdentBlock(blocks, id))
+        else commit(mapBlock(blocks, id, (b) => ({ ...b, type: 'paragraph' })))
+        caret.current = { id, from: 0 }
+        return
+      }
+
+      // A heading is followed by body text, never another heading.
+      const carry: BlockType = LIST_TYPES.includes(block.type) ? block.type : 'paragraph'
+      const fresh: Block = {
+        ...emptyBlock(carry),
+        content: sliceSpans(block.content, here.from),
+      }
+      const trimmed = mapBlock(blocks, id, (b) => ({
+        ...b,
+        content: sliceSpans(b.content, 0, here.from),
+      }))
+      // Children belong under the block, so a new sibling goes above them.
+      const parent = findBlock(trimmed, id)
+      const next = parent?.children.length
+        ? mapBlock(trimmed, id, (b) => ({ ...b, children: [fresh, ...b.children] }))
+        : insertAfter(trimmed, id, [fresh])
+      commit(next)
+      caret.current = { id: fresh.id, from: 0 }
+      return
+    }
+
+    if (e.key === 'Backspace' && here.from === 0 && here.to === 0) {
+      if (slash?.id === id) setSlash(null)
+      // Strip the formatting first, then the indent, then merge.
+      if (block.type !== 'paragraph') {
+        e.preventDefault()
+        setType(id, 'paragraph')
+        caret.current = { id, from: 0 }
+        return
+      }
+      if (depth > 0) {
+        e.preventDefault()
+        commit(outdentBlock(blocks, id))
+        caret.current = { id, from: 0 }
+        return
+      }
+      const above = blockAbove(blocks, id)
+      if (!above) return
+      e.preventDefault()
+      if (above.type === 'divider') {
+        commit(removeBlock(blocks, above.id))
+        caret.current = { id, from: 0 }
+        return
+      }
+      const joinAt = spanText(above.content).length
+      commit(
+        removeBlock(
+          mapBlock(blocks, above.id, (b) => ({
+            ...b,
+            content: concatSpans(b.content, block.content),
+            children: [...b.children, ...block.children],
+          })),
+          id,
+        ),
+      )
+      caret.current = { id: above.id, from: joinAt }
+    }
   }
 
   const words = wordCount(blocks)
   const mins = readingMinutes(words)
-
-  // Numbering restarts after anything that is not a numbered item at the same depth.
-  let run = 0
+  const flat = flattenBlocks(blocks)
 
   return (
     <div className="pt-1">
@@ -2406,36 +3034,49 @@ function ScriptEditor({
           setTitle(e.target.value)
           setDirty(true)
         }}
-        placeholder="Untitled script"
-        className="w-full bg-transparent pt-2 pb-3 text-[28px] font-semibold tracking-tight outline-none"
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          const first = flat[0]
+          if (first) caret.current = { id: first.block.id, from: 0 }
+          const el = first && blockEl(first.block.id)
+          if (el) {
+            el.focus()
+            placeCaret(el, 0)
+          }
+        }}
+        placeholder="Untitled"
+        className="w-full bg-transparent pt-2 pb-2 text-[36px] leading-tight font-bold tracking-tight outline-none placeholder:text-[var(--ghost)]"
       />
 
-      <div className="pb-24">
-        {blocks.map((b) => {
-          run = b.type === 'number' ? run + 1 : 0
-          return (
-            <EditorBlock
-              key={b.id}
-              block={b}
-              index={b.type === 'number' ? run : 0}
-              onText={(text) => onText(b, text)}
-              onEnter={(offset) => onEnter(b, offset)}
-              onBackspaceAtStart={() => onBackspaceAtStart(b)}
-              onIndent={(delta) => onIndent(b, delta)}
-              onCheck={() => patch(b.id, { checked: !b.checked })}
-              onDelete={() => edit(blocks.filter((x) => x.id !== b.id))}
-            />
-          )
-        })}
+      <div className="relative pb-32">
+        <BlockList
+          blocks={blocks}
+          depth={0}
+          onSpans={onSpans}
+          onKey={onKey}
+          onFocus={setFocusedId}
+          focusedId={focusedId}
+        />
+        {slash && (
+          <SlashMenu filter={slash.filter} active={slash.active} onPick={pickSlash} />
+        )}
       </div>
+
+      {toolbar && (
+        <SelectionToolbar
+          rect={toolbar}
+          marks={toolbar.marks}
+          onMark={(m) => toggleMark(toolbar.id, m)}
+          onTurn={(t) => {
+            setType(toolbar.id, t)
+            setToolbar(null)
+          }}
+          onColor={(kind, name) => setColor(toolbar.id, kind, name)}
+        />
+      )}
     </div>
   )
-}
-
-/** The caret inside a block that is currently mounted, or 0. */
-function caretOffsetOf(id: string): number {
-  const el = document.querySelector<HTMLElement>(`[data-block="${id}"]`)
-  return el ? caretOffset(el) : 0
 }
 
 function ScriptsView({
