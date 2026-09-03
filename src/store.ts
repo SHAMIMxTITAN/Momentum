@@ -776,6 +776,47 @@ export function isDone(t: Todo, now: Date = new Date()): boolean {
 
 const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 
+/** Milliseconds from `now` to the next local midnight. Local, so it lands at 12 AM here. */
+export const msUntilMidnight = (now: Date = new Date()): number =>
+  new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime()
+
+/**
+ * Re-render when the local day changes.
+ *
+ * `isDone` is evaluated during render, so without this the day rolling over is invisible
+ * until something *else* causes a render — a tap, or a sync pull on window focus. That is
+ * what made the reset look like it happened at a random time in the morning rather than
+ * at midnight.
+ *
+ * The timer alone is not enough: phones suspend timers for a backgrounded app, so a
+ * wake-up also re-checks. State is the day string, so a re-render only happens when the
+ * day genuinely changed.
+ */
+export function useDayTick(): string {
+  const [day, setDay] = useState(() => new Date().toDateString())
+
+  useEffect(() => {
+    let timer = 0
+    const check = () => setDay(new Date().toDateString())
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        check()
+        schedule()
+      }, msUntilMidnight() + 1000) // a second past, so the clock has definitely ticked over
+    }
+    schedule()
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('focus', check)
+    }
+  }, [])
+
+  return day
+}
+
 /**
  * A one-off still open in Today that arrived on an earlier day — it rolled over rather than
  * being done. Dailies are exempt: coming back every morning is the point, not a failure.

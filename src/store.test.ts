@@ -8,6 +8,7 @@ import {
   buildItemRows,
   importance,
   isDone,
+  msUntilMidnight,
   isOverdue,
   doneByDay,
   cleanTag,
@@ -773,4 +774,18 @@ test('blockAbove follows what is on screen, not the sibling order', () => {
   assert.equal(blockAbove(t, 'b')?.id, 'a')
   assert.equal(blockAbove(t, 'c')?.id, 'b', 'the nested child is directly above c')
   assert.equal(blockAbove(t, 'a'), null)
+})
+
+test('msUntilMidnight counts to the next LOCAL midnight, not UTC', () => {
+  const at = (s: string) => msUntilMidnight(new Date(s))
+  const mins = (ms: number) => Math.round(ms / 60000)
+
+  assert.equal(mins(at('2026-08-29T23:00:00')), 60, 'an hour before midnight')
+  assert.equal(mins(at('2026-08-29T00:00:00')), 24 * 60, 'a full day at midnight itself')
+  assert.equal(mins(at('2026-08-29T05:30:00')), 18 * 60 + 30, 'the 5:30am case, ~18.5h to go')
+  assert.ok(at('2026-08-29T23:59:59') > 0, 'never zero or negative')
+
+  // month and year rollovers
+  assert.equal(mins(at('2026-08-31T23:30:00')), 30)
+  assert.equal(mins(at('2026-12-31T23:30:00')), 30)
 })

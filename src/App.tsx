@@ -67,6 +67,7 @@ import {
   readingMinutes,
   relativeTime,
   useScripts,
+  useDayTick,
   DAILY_COLORS,
   DEFAULT_DAILY_COLOR,
   reorderVisible,
@@ -140,6 +141,9 @@ export default function App() {
   const { todos, setTodos } = useTodos()
   const { payments, setPayments } = usePayments()
   const { scripts, setScripts } = useScripts()
+  // Re-renders the moment the local day rolls over, so a daily un-ticks at 12 AM rather
+  // than whenever the next tap or sync happens to repaint it.
+  useDayTick()
   // Lifted out of ScriptsView because the pager has to know: a swipe inside the editor
   // would fight text selection, so paging is switched off while a script is open.
   const [openScript, setOpenScript] = useState<string | null>(null)
