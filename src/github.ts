@@ -1,14 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  parseItems,
-  parsePayments,
-  parseScripts,
-  parseTodos,
-  type Item,
-  type Payment,
-  type Script,
-  type Todo,
-} from './store.ts'
+import { parseItems, parsePayments, parseTodos, type Item, type Payment, type Todo } from './store.ts'
 
 export type SyncConfig = { token: string; repo: string; path: string }
 
@@ -16,7 +7,6 @@ const CFG_KEY = 'buy-next.sync'
 const BASE_KEY = 'buy-next.synced'
 const TODO_BASE_KEY = 'buy-next.synced.todos'
 const PAY_BASE_KEY = 'buy-next.synced.payments'
-const SCRIPT_BASE_KEY = 'buy-next.synced.scripts'
 const API = 'https://api.github.com'
 
 export const serialize = (rows: unknown[]) => JSON.stringify(rows, null, 2)
@@ -31,8 +21,6 @@ const stem = (path: string) => path.replace(/\.json$/i, '')
 export const todosPath = (path: string) => `${stem(path)}.todos.json`
 
 export const paymentsPath = (path: string) => `${stem(path)}.payments.json`
-
-export const scriptsPath = (path: string) => `${stem(path)}.scripts.json`
 
 const b64encode = (s: string) => {
   const bytes = new TextEncoder().encode(s)
@@ -298,13 +286,6 @@ const PAYMENT_FILE: FileSync<Payment> = {
   label: 'payment',
 }
 
-const SCRIPT_FILE: FileSync<Script> = {
-  path: (cfg) => scriptsPath(cfg.path),
-  baseKey: SCRIPT_BASE_KEY,
-  parse: parseScripts,
-  label: 'script',
-}
-
 /** Whichever half is in trouble is the one worth showing. */
 const worst = (a: Status, b: Status): Status => {
   const rank = (s: Status) =>
@@ -319,15 +300,12 @@ export function useGitHubSync(
   replaceTodos: (todos: Todo[]) => void,
   payments: Payment[],
   replacePayments: (payments: Payment[]) => void,
-  scripts: Script[],
-  replaceScripts: (scripts: Script[]) => void,
 ) {
   const [cfg, setCfgState] = useState<SyncConfig | null>(loadCfg)
 
   const itemSync = useFileSync(cfg, items, replaceItems, ITEM_FILE)
   const todoSync = useFileSync(cfg, todos, replaceTodos, TODO_FILE)
   const paymentSync = useFileSync(cfg, payments, replacePayments, PAYMENT_FILE)
-  const scriptSync = useFileSync(cfg, scripts, replaceScripts, SCRIPT_FILE)
 
   const setCfg = (next: SyncConfig | null) => {
     if (next) localStorage.setItem(CFG_KEY, JSON.stringify(next))
@@ -336,7 +314,6 @@ export function useGitHubSync(
     localStorage.removeItem(BASE_KEY)
     localStorage.removeItem(TODO_BASE_KEY)
     localStorage.removeItem(PAY_BASE_KEY)
-    localStorage.removeItem(SCRIPT_BASE_KEY)
     setCfgState(next)
   }
 
@@ -344,20 +321,15 @@ export function useGitHubSync(
     itemSync.sync()
     todoSync.sync()
     paymentSync.sync()
-    scriptSync.sync()
   }
 
   return {
     cfg,
     setCfg,
     sync,
-    status: worst(
-      worst(worst(itemSync.status, todoSync.status), paymentSync.status),
-      scriptSync.status,
-    ),
+    status: worst(worst(itemSync.status, todoSync.status), paymentSync.status),
     items: itemSync,
     todos: todoSync,
     payments: paymentSync,
-    scripts: scriptSync,
   }
 }

@@ -17,25 +17,13 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import {
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  GripVertical,
-  Moon,
-  Repeat,
-  Sun,
-  Star,
-  X,
-} from 'lucide-react'
+import { Check, ChevronRight, GripVertical, Moon, Repeat, Sun, Star, X } from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
   WHENS,
   applyItemDrag,
   buildItemRows,
-  buildRows,
-  applyDrag,
   cleanTag,
   doneByDay,
   fillRatio,
@@ -44,29 +32,6 @@ import {
   groupPayments,
   monthlySpend,
   isDone,
-  MARKS,
-  spanText,
-  sliceSpans,
-  concatSpans,
-  normalizeSpans,
-  applyMark,
-  hasMark,
-  flattenBlocks,
-  mapBlock,
-  findBlock,
-  removeBlock,
-  insertAfter,
-  indentBlock,
-  outdentBlock,
-  moveBlock,
-  duplicateBlock,
-  blockAbove,
-  SCRIPT_STATUSES,
-  emptyBlock,
-  wordCount,
-  readingMinutes,
-  relativeTime,
-  useScripts,
   useDayTick,
   DAILY_COLORS,
   DEFAULT_DAILY_COLOR,
@@ -78,20 +43,11 @@ import {
   usePayments,
   useTodos,
   parseItems,
-  parseTodos,
-  parsePayments,
-  parseScripts,
   type Item,
   type Kind,
   type Payment,
   type Todo,
   type Urgency,
-  type Script,
-  type ScriptStatus,
-  type Block,
-  type BlockType,
-  type Span,
-  type Mark,
   type When,
 } from './store'
 import { useTheme } from './theme'
@@ -133,34 +89,21 @@ const money = (n: number) => `₹${inr.format(n)}`
 const FIELD =
   'rounded-lg bg-[var(--field)] px-2.5 py-1.5 text-[14px] tracking-tight outline-none'
 
-type Tab = 'Buy' | 'To-do' | 'Spending' | 'Scripts'
-const TABS: Tab[] = ['Buy', 'To-do', 'Spending', 'Scripts']
+type Tab = 'Buy' | 'To-do' | 'Spending'
+const TABS: Tab[] = ['Buy', 'To-do', 'Spending']
 
 export default function App() {
   const { items, commit, replaceAll, undo, toast, setToast } = useItems()
   const { todos, setTodos } = useTodos()
   const { payments, setPayments } = usePayments()
-  const { scripts, setScripts } = useScripts()
   // Re-renders the moment the local day rolls over, so a daily un-ticks at 12 AM rather
   // than whenever the next tap or sync happens to repaint it.
   useDayTick()
-  // Lifted out of ScriptsView because the pager has to know: a swipe inside the editor
-  // would fight text selection, so paging is switched off while a script is open.
-  const [openScript, setOpenScript] = useState<string | null>(null)
   const theme = useTheme()
   // To-do opens first: it is the tab with something to do *today*. It also sits in the
   // middle, so the first swipe works in either direction.
   const [tab, setTab] = useState<Tab>('To-do')
-  const sync = useGitHubSync(
-    items,
-    replaceAll,
-    todos,
-    setTodos,
-    payments,
-    setPayments,
-    scripts,
-    setScripts,
-  )
+  const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
 
   const pager = useRef<HTMLDivElement>(null)
 
@@ -204,63 +147,6 @@ export default function App() {
     return () => clearTimeout(t)
   }, [toast, setToast])
 
-  // Export used to be a bare array of items. It is now the whole app, because scripts are
-  // too much work to lose to a half-backup.
-  const exportJson = () => {
-    const dump = { version: 2, items, todos, payments, scripts }
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' }),
-    )
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `momentum-${new Date().toISOString().slice(0, 10)}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  /**
-   * Reads both shapes: the old bare array (items only) and the object. A key that is
-   * absent leaves that list alone rather than emptying it — importing a pre-Scripts
-   * backup must not wipe the scripts it predates.
-   */
-  const importJson = async (file: File) => {
-    try {
-      const raw: unknown = JSON.parse(await file.text())
-      if (Array.isArray(raw)) {
-        const parsed = parseItems(raw)
-        if (!parsed.length) return setToast('Nothing usable in that file')
-        replaceAll(parsed)
-        return setToast(`Imported ${parsed.length} items`)
-      }
-      if (!raw || typeof raw !== 'object') return setToast('Nothing usable in that file')
-      const o = raw as Record<string, unknown>
-      const counts: string[] = []
-      if ('items' in o) {
-        const v = parseItems(o.items)
-        replaceAll(v)
-        counts.push(`${v.length} items`)
-      }
-      if ('todos' in o) {
-        const v = parseTodos(o.todos)
-        setTodos(v)
-        counts.push(`${v.length} tasks`)
-      }
-      if ('payments' in o) {
-        const v = parsePayments(o.payments)
-        setPayments(v)
-        counts.push(`${v.length} payments`)
-      }
-      if ('scripts' in o) {
-        const v = parseScripts(o.scripts)
-        setScripts(v)
-        counts.push(`${v.length} scripts`)
-      }
-      setToast(counts.length ? `Imported ${counts.join(', ')}` : 'Nothing usable in that file')
-    } catch {
-      setToast(`Couldn't read that file`)
-    }
-  }
-
   return (
     <MotionConfig reducedMotion="user" transition={SPRING}>
       {/* Column: a fixed header over a pager that owns all the scrolling. The pager has to
@@ -296,10 +182,7 @@ export default function App() {
         <div
           ref={pager}
           onScroll={onScroll}
-          className={`flex min-h-0 flex-1 overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-            // Paging off inside the editor: a horizontal swipe there is a text selection.
-            openScript ? 'overflow-x-hidden' : 'snap-x snap-mandatory overflow-x-auto'
-          }`}
+          className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {TABS.map((t) => (
             <section
@@ -308,27 +191,11 @@ export default function App() {
             >
               <div className="mx-auto max-w-2xl px-3 pb-32 sm:px-6">
                 {t === 'Buy' && (
-                  <BuyView
-                    items={items}
-                    commit={commit}
-                    replaceAll={replaceAll}
-                    setToast={setToast}
-                    sync={sync}
-                    onExport={exportJson}
-                    onImport={importJson}
-                  />
+                  <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
                 )}
                 {t === 'To-do' && <TodoView todos={todos} setTodos={setTodos} />}
                 {t === 'Spending' && (
                   <SpendView items={items} payments={payments} setPayments={setPayments} />
-                )}
-                {t === 'Scripts' && (
-                  <ScriptsView
-                    scripts={scripts}
-                    setScripts={setScripts}
-                    openId={openScript}
-                    setOpenId={setOpenScript}
-                  />
                 )}
               </div>
             </section>
@@ -400,13 +267,6 @@ function ConflictBars({ sync }: { sync: Sync }) {
           resolve={sync.payments.resolve}
         />
       )}
-      {sync.scripts.conflict && (
-        <ConflictBar
-          what="scripts"
-          count={sync.scripts.conflict.items.length}
-          resolve={sync.scripts.resolve}
-        />
-      )}
     </>
   )
 }
@@ -454,16 +314,12 @@ function BuyView({
   replaceAll,
   setToast,
   sync,
-  onExport,
-  onImport,
 }: {
   items: Item[]
   commit: (next: Item[], undoLabel?: string) => void
   replaceAll: (items: Item[]) => void
   setToast: (t: string | null) => void
   sync: Sync
-  onExport: () => void
-  onImport: (file: File) => void
 }) {
   const [kindFilter, setKindFilter] = useState<Set<Kind>>(new Set())
   const [tagFilter, setTagFilter] = useState<Set<string>>(new Set())
@@ -537,6 +393,27 @@ function BuyView({
     const to = ids.indexOf(String(over.id))
     if (from < 0 || to < 0 || from === to) return
     commit(applyItemDrag(items, rows, from, to))
+  }
+
+  const exportJson = () => {
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' }),
+    )
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `momentum-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const importJson = async (file: File) => {
+    try {
+      const parsed = parseItems(JSON.parse(await file.text()))
+      if (!parsed.length) return setToast('Nothing usable in that file')
+      commit(parsed, `Imported ${parsed.length} items`)
+    } catch {
+      setToast(`Couldn't read that file`)
+    }
   }
 
   const toggle = <T,>(set: Set<T>, v: T) => {
@@ -691,7 +568,7 @@ function BuyView({
       )}
 
       <div className="flex flex-wrap items-center gap-4 px-1 pt-10 text-[13px] text-[var(--muted)]">
-        <button onClick={onExport} className="hover:text-[#007AFF]">
+        <button onClick={exportJson} className="hover:text-[#007AFF]">
           Export JSON
         </button>
         <button onClick={() => fileRef.current?.click()} className="hover:text-[#007AFF]">
@@ -708,7 +585,7 @@ function BuyView({
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0]
-            if (f) onImport(f)
+            if (f) importJson(f)
             e.target.value = ''
           }}
         />
@@ -2067,1214 +1944,6 @@ function SyncPanel({
           </button>
         )}
       </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------ Scripts view */
-
-const STATUS_COLOR: Record<ScriptStatus, string> = {
-  Idea: '#8E8E93',
-  Writing: '#FF9500',
-  Ready: '#007AFF',
-  Recorded: '#34C759',
-}
-
-/**
- * Notion's palette, as tokens rather than raw hex: text colours are the accent itself,
- * highlights are the same hue at low alpha so they sit under text in either theme.
- * 'default' means "no mark", which is how the picker clears one.
- */
-const TEXT_COLORS: Record<string, string> = {
-  default: 'inherit',
-  gray: '#8E8E93',
-  brown: '#A2845E',
-  orange: '#FF9500',
-  yellow: '#E6B800',
-  green: '#34C759',
-  blue: '#007AFF',
-  purple: '#AF52DE',
-  pink: '#FF2D55',
-  red: '#FF3B30',
-}
-
-const HIGHLIGHTS: Record<string, string> = {
-  default: 'transparent',
-  gray: '#8E8E9333',
-  brown: '#A2845E33',
-  orange: '#FF950033',
-  yellow: '#E6B80040',
-  green: '#34C75933',
-  blue: '#007AFF33',
-  purple: '#AF52DE33',
-  pink: '#FF2D5533',
-  red: '#FF3B3033',
-}
-
-const COLOR_NAMES = Object.keys(TEXT_COLORS)
-
-/**
- * More space above a heading than below it, so a heading reads as belonging to the text
- * under it rather than floating between two paragraphs. Notion's proportions: 1.875 /
- * 1.5 / 1.25 em against a 16px body.
- */
-const BLOCK_CLASS: Record<BlockType, string> = {
-  paragraph: 'text-[16px] leading-[1.65]',
-  h1: 'text-[30px] font-bold tracking-tight leading-[1.3]',
-  h2: 'text-[24px] font-semibold tracking-tight leading-[1.3]',
-  h3: 'text-[20px] font-semibold tracking-tight leading-[1.35]',
-  bulleted: 'text-[16px] leading-[1.65]',
-  numbered: 'text-[16px] leading-[1.65]',
-  quote: 'text-[16px] leading-[1.65]',
-  code: 'text-[14px] leading-[1.6] font-mono whitespace-pre-wrap',
-  divider: '',
-  toggle: 'text-[16px] leading-[1.65]',
-  callout: 'text-[16px] leading-[1.65]',
-}
-
-const BLOCK_SPACING: Record<BlockType, string> = {
-  paragraph: 'mt-[2px]',
-  h1: 'mt-8',
-  h2: 'mt-6',
-  h3: 'mt-4',
-  bulleted: 'mt-[2px]',
-  numbered: 'mt-[2px]',
-  quote: 'mt-2',
-  code: 'mt-2',
-  divider: 'my-2',
-  toggle: 'mt-[2px]',
-  callout: 'mt-2',
-}
-
-const PLACEHOLDER: Partial<Record<BlockType, string>> = {
-  h1: 'Heading 1',
-  h2: 'Heading 2',
-  h3: 'Heading 3',
-  quote: 'Quote',
-  code: 'Code',
-}
-
-/** Typed at the start of a block, these become the block type. */
-const BLOCK_SHORTCUTS: [RegExp, BlockType][] = [
-  [/^# $/, 'h1'],
-  [/^## $/, 'h2'],
-  [/^### $/, 'h3'],
-  [/^[-*] $/, 'bulleted'],
-  [/^1\. $/, 'numbered'],
-  [/^> $/, 'quote'],
-  [/^```$/, 'code'],
-  [/^--- $/, 'divider'],
-]
-
-/** Closing-character conversions. Group 1 is the text that survives. */
-const INLINE_RULES: [RegExp, Mark][] = [
-  [/\*\*([^*]+)\*\*$/, 'bold'],
-  [/(?<!\*)\*([^*]+)\*$/, 'italic'],
-  [/~~([^~]+)~~$/, 'strike'],
-  [/`([^`]+)`$/, 'code'],
-]
-
-const LIST_TYPES: BlockType[] = ['bulleted', 'numbered']
-const TEXT_BLOCKS: BlockType[] = [
-  'paragraph',
-  'h1',
-  'h2',
-  'h3',
-  'bulleted',
-  'numbered',
-  'quote',
-  'code',
-]
-
-const SLASH_ITEMS: { type: BlockType; name: string; desc: string; icon: string }[] = [
-  { type: 'paragraph', name: 'Text', desc: 'Plain paragraph', icon: 'T' },
-  { type: 'h1', name: 'Heading 1', desc: 'Major section', icon: 'H1' },
-  { type: 'h2', name: 'Heading 2', desc: 'Sub-section', icon: 'H2' },
-  { type: 'h3', name: 'Heading 3', desc: 'Sub-sub-section', icon: 'H3' },
-  { type: 'bulleted', name: 'Bulleted list', desc: 'Beat-by-beat points', icon: '•' },
-  { type: 'numbered', name: 'Numbered list', desc: 'Ordered steps', icon: '1.' },
-  { type: 'quote', name: 'Quote', desc: 'Set a line apart', icon: '"' },
-  { type: 'code', name: 'Code', desc: 'Monospaced block', icon: '</>' },
-  { type: 'divider', name: 'Divider', desc: 'Section break', icon: '—' },
-]
-
-/* ---- selection <-> character offsets -------------------------------------- */
-
-/**
- * Absolute character offset of (node, offset) within a block element.
- *
- * Measured with a Range rather than by walking text nodes: when the caret sits on an
- * *element* rather than a text node — which is where the browser leaves it after we
- * rewrite a block — `offset` counts child nodes, not characters. Range.toString() is the
- * one reading that is right for both cases.
- */
-function offsetIn(root: HTMLElement, node: Node, offset: number): number {
-  const probe = document.createRange()
-  probe.selectNodeContents(root)
-  try {
-    probe.setEnd(node, offset)
-  } catch {
-    return 0
-  }
-  return probe.toString().length
-}
-
-/** The (node, offset) pair for an absolute character index. */
-function pointAt(root: HTMLElement, index: number): [Node, number] {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  let total = 0
-  let n = walker.nextNode()
-  while (n) {
-    const len = n.textContent?.length ?? 0
-    if (total + len >= index) return [n, index - total]
-    total += len
-    n = walker.nextNode()
-  }
-  return [root, 0]
-}
-
-function blockEl(id: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[data-block="${id}"]`)
-}
-
-/** Caret offsets inside one block, or null when the selection is elsewhere. */
-function selectionIn(root: HTMLElement): { from: number; to: number } | null {
-  const sel = getSelection()
-  if (!sel || !sel.rangeCount) return null
-  const r = sel.getRangeAt(0)
-  if (!root.contains(r.startContainer) || !root.contains(r.endContainer)) return null
-  const from = offsetIn(root, r.startContainer, r.startOffset)
-  const to = offsetIn(root, r.endContainer, r.endOffset)
-  return from <= to ? { from, to } : { from: to, to: from }
-}
-
-function placeCaret(root: HTMLElement, from: number, to: number = from) {
-  const [sn, so] = pointAt(root, from)
-  const [en, eo] = pointAt(root, to)
-  const range = document.createRange()
-  range.setStart(sn, so)
-  range.setEnd(en, eo)
-  const sel = getSelection()
-  sel?.removeAllRanges()
-  sel?.addRange(range)
-}
-
-/* ---- DOM <-> spans -------------------------------------------------------- */
-
-/** Read a block element back into spans, taking marks off the data attributes. */
-function readSpans(root: HTMLElement): Span[] {
-  const out: Span[] = []
-  const walk = (node: Node, inherited: Partial<Span>) => {
-    for (const child of Array.from(node.childNodes)) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const text = child.textContent ?? ''
-        if (text) out.push({ ...inherited, text })
-      } else if (child instanceof HTMLElement) {
-        if (child.tagName === 'BR') continue
-        const marks: Partial<Span> = { ...inherited }
-        const flags = child.dataset.m ?? ''
-        if (flags.includes('b')) marks.bold = true
-        if (flags.includes('i')) marks.italic = true
-        if (flags.includes('u')) marks.underline = true
-        if (flags.includes('s')) marks.strike = true
-        if (flags.includes('c')) marks.code = true
-        if (child.dataset.color) marks.color = child.dataset.color
-        if (child.dataset.bg) marks.bg = child.dataset.bg
-        walk(child, marks)
-      }
-    }
-  }
-  walk(root, {})
-  return normalizeSpans(out)
-}
-
-const markFlags = (s: Span): string =>
-  `${s.bold ? 'b' : ''}${s.italic ? 'i' : ''}${s.underline ? 'u' : ''}${s.strike ? 's' : ''}${
-    s.code ? 'c' : ''
-  }`
-
-function spanStyle(s: Span): React.CSSProperties {
-  const style: React.CSSProperties = {}
-  if (s.bold) style.fontWeight = 600
-  if (s.italic) style.fontStyle = 'italic'
-  if (s.underline || s.strike)
-    style.textDecoration = `${s.underline ? 'underline' : ''} ${s.strike ? 'line-through' : ''}`.trim()
-  if (s.color && s.color !== 'default') style.color = TEXT_COLORS[s.color] ?? undefined
-  if (s.bg && s.bg !== 'default') style.background = HIGHLIGHTS[s.bg] ?? undefined
-  if (s.code) {
-    style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace'
-    style.fontSize = '0.9em'
-    style.background = style.background ?? 'var(--card-2)'
-    style.borderRadius = '4px'
-    style.padding = '0.1em 0.3em'
-  }
-  return style
-}
-
-function SpanRun({ span }: { span: Span }) {
-  return (
-    <span
-      data-m={markFlags(span) || undefined}
-      data-color={span.color}
-      data-bg={span.bg}
-      style={spanStyle(span)}
-    >
-      {span.text}
-    </span>
-  )
-}
-
-/* ---- list markers ---------------------------------------------------------- */
-
-const BULLETS = ['•', '◦', '▪']
-const ROMAN: [number, string][] = [
-  [10, 'x'],
-  [9, 'ix'],
-  [5, 'v'],
-  [4, 'iv'],
-  [1, 'i'],
-]
-
-const toRoman = (n: number): string => {
-  let out = ''
-  let left = n
-  for (const [value, sym] of ROMAN) {
-    while (left >= value) {
-      out += sym
-      left -= value
-    }
-  }
-  return out || 'i'
-}
-
-/** 1. at root, a. one level in, i. two levels in — then it repeats. */
-function numberLabel(n: number, depth: number): string {
-  const level = depth % 3
-  if (level === 0) return `${n}.`
-  if (level === 1) return `${String.fromCharCode(96 + ((n - 1) % 26) + 1)}.`
-  return `${toRoman(n)}.`
-}
-
-/* ---- the editor ------------------------------------------------------------ */
-
-type Cmd = { id: string; from: number; to?: number }
-
-function EditorBlock({
-  block,
-  depth,
-  index,
-  onSpans,
-  onKey,
-  onFocus,
-  focusedId,
-}: {
-  block: Block
-  depth: number
-  index: number
-  onSpans: (id: string, content: Span[]) => void
-  onKey: (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => void
-  onFocus: (id: string) => void
-  focusedId: string | null
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-
-  /**
-   * The DOM mirrors the model. Runs on every render with no dependency array: a markdown
-   * shortcut can leave the content unchanged by value while the DOM still holds the typed
-   * prefix, and a dependency would not fire. Typing costs nothing because the model is
-   * read *from* the DOM, so the two already agree. Layout, not passive, so the parent can
-   * place the caret afterwards.
-   */
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    // Compare the spans, not just their text: bolding a selection leaves the text
-    // identical, and a text-only check would skip the repaint and make every mark
-    // and colour appear to do nothing.
-    if (JSON.stringify(readSpans(el)) === JSON.stringify(block.content)) return
-    el.textContent = ''
-    for (const s of block.content) {
-      const node = document.createElement('span')
-      const flags = markFlags(s)
-      if (flags) node.dataset.m = flags
-      if (s.color) node.dataset.color = s.color
-      if (s.bg) node.dataset.bg = s.bg
-      Object.assign(node.style, spanStyle(s) as Record<string, string>)
-      node.textContent = s.text
-      el.appendChild(node)
-    }
-  })
-
-  if (block.type === 'divider') {
-    return (
-      <div className={BLOCK_SPACING.divider} style={{ marginLeft: depth * 26 }}>
-        <div className="h-px" style={{ background: 'var(--separator)' }} />
-      </div>
-    )
-  }
-
-  const empty = !spanText(block.content)
-  const placeholder =
-    empty && focusedId === block.id ? (PLACEHOLDER[block.type] ?? "Type '/' for commands") : ''
-
-  const marker =
-    block.type === 'bulleted' ? (
-      <span className="w-4 shrink-0 pt-[2px] text-center text-[var(--muted)] select-none">
-        {BULLETS[depth % 3]}
-      </span>
-    ) : block.type === 'numbered' ? (
-      <span className="w-5 shrink-0 pt-[1px] text-[15px] text-[var(--muted)] tabular-nums select-none">
-        {numberLabel(index, depth)}
-      </span>
-    ) : null
-
-  return (
-    <div className={BLOCK_SPACING[block.type]} style={{ marginLeft: depth * 26 }}>
-      <div className="flex gap-1.5">
-        {marker}
-        {block.type === 'quote' && (
-          <div className="w-[3px] shrink-0 rounded-full" style={{ background: 'var(--faint)' }} />
-        )}
-        <div
-          ref={ref}
-          data-block={block.id}
-          data-ph={placeholder || undefined}
-          contentEditable
-          suppressContentEditableWarning
-          role="textbox"
-          onInput={() => ref.current && onSpans(block.id, readSpans(ref.current))}
-          onKeyDown={(e) => onKey(e, block, depth)}
-          onFocus={() => onFocus(block.id)}
-          className={`min-w-0 flex-1 outline-none ${BLOCK_CLASS[block.type]} ${
-            block.type === 'code' ? 'rounded-xl bg-[var(--card)] px-3 py-2' : ''
-          } ${block.type === 'quote' ? 'pl-2 text-[var(--muted)]' : ''} empty:before:text-[var(--ghost)] before:content-[attr(data-ph)] before:pointer-events-none before:absolute`}
-          style={{ position: 'relative' }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function SlashMenu({
-  filter,
-  active,
-  onPick,
-}: {
-  filter: string
-  active: number
-  onPick: (type: BlockType) => void
-}) {
-  const items = SLASH_ITEMS.filter((i) =>
-    (i.name + i.type).toLowerCase().includes(filter.toLowerCase()),
-  )
-  if (!items.length) return null
-  return (
-    <div className="absolute z-30 mt-1 w-72 overflow-hidden rounded-2xl bg-[var(--card)] py-1.5 shadow-lg">
-      <p className="px-3 py-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
-        Basic blocks
-      </p>
-      {items.map((it, i) => (
-        <button
-          key={it.type}
-          onPointerDown={(e) => {
-            e.preventDefault()
-            onPick(it.type)
-          }}
-          className="flex w-full items-center gap-3 px-3 py-1.5 text-left"
-          style={i === active % items.length ? { background: 'var(--card-2)' } : undefined}
-        >
-          <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[var(--card-2)] text-[12px] font-semibold text-[var(--muted)]">
-            {it.icon}
-          </span>
-          <span className="min-w-0">
-            <span className="block truncate text-[15px] tracking-tight">{it.name}</span>
-            <span className="block truncate text-[12px] text-[var(--muted)]">{it.desc}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function SelectionToolbar({
-  rect,
-  marks,
-  onMark,
-  onTurn,
-  onColor,
-}: {
-  rect: { top: number; left: number }
-  marks: Record<Mark, boolean>
-  onMark: (m: Mark) => void
-  onTurn: (t: BlockType) => void
-  onColor: (kind: 'color' | 'bg', name: string) => void
-}) {
-  const [menu, setMenu] = useState<'turn' | 'color' | null>(null)
-  const Btn = ({ m, label }: { m: Mark; label: React.ReactNode }) => (
-    <button
-      onPointerDown={(e) => {
-        e.preventDefault()
-        onMark(m)
-      }}
-      className="grid size-7 place-items-center rounded-md text-[13px]"
-      style={marks[m] ? { color: '#007AFF' } : undefined}
-    >
-      {label}
-    </button>
-  )
-  return (
-    <div
-      className="fixed z-40 flex items-center gap-0.5 rounded-xl bg-[var(--card)] px-1.5 py-1 shadow-lg"
-      style={{ top: rect.top, left: rect.left }}
-      onPointerDown={(e) => e.preventDefault()}
-    >
-      <button
-        onPointerDown={(e) => {
-          e.preventDefault()
-          setMenu(menu === 'turn' ? null : 'turn')
-        }}
-        className="rounded-md px-2 py-1 text-[13px] text-[var(--muted)]"
-      >
-        Turn into ▾
-      </button>
-      <span className="mx-1 h-4 w-px" style={{ background: 'var(--separator)' }} />
-      <Btn m="bold" label={<b>B</b>} />
-      <Btn m="italic" label={<i>I</i>} />
-      <Btn m="underline" label={<u>U</u>} />
-      <Btn m="strike" label={<s>S</s>} />
-      <Btn m="code" label={<span className="font-mono">{'<>'}</span>} />
-      <button
-        onPointerDown={(e) => {
-          e.preventDefault()
-          setMenu(menu === 'color' ? null : 'color')
-        }}
-        className="rounded-md px-2 py-1 text-[13px] text-[var(--muted)]"
-      >
-        Color ▾
-      </button>
-
-      {menu === 'turn' && (
-        <div className="absolute top-full left-0 mt-1 w-48 overflow-hidden rounded-xl bg-[var(--card)] py-1 shadow-lg">
-          {SLASH_ITEMS.filter((i) => i.type !== 'divider').map((i) => (
-            <button
-              key={i.type}
-              onPointerDown={(e) => {
-                e.preventDefault()
-                onTurn(i.type)
-                setMenu(null)
-              }}
-              className="block w-full px-3 py-1.5 text-left text-[14px]"
-            >
-              {i.name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {menu === 'color' && (
-        <div className="absolute top-full right-0 mt-1 flex gap-3 rounded-xl bg-[var(--card)] p-2 shadow-lg">
-          {(['color', 'bg'] as const).map((kind) => (
-            <div key={kind}>
-              <p className="px-1 pb-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
-                {kind === 'color' ? 'Text' : 'Highlight'}
-              </p>
-              {COLOR_NAMES.map((name) => (
-                <button
-                  key={name}
-                  onPointerDown={(e) => {
-                    e.preventDefault()
-                    onColor(kind, name)
-                    setMenu(null)
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] capitalize"
-                >
-                  <span
-                    className="grid size-4 shrink-0 place-items-center rounded border text-[10px] font-semibold"
-                    style={{
-                      borderColor: 'var(--separator)',
-                      background: kind === 'bg' ? HIGHLIGHTS[name] : 'transparent',
-                      color: kind === 'color' ? TEXT_COLORS[name] : 'var(--text)',
-                    }}
-                  >
-                    A
-                  </span>
-                  {name}
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** Renders a sibling list, keeping the numbered run per level. */
-function BlockList({
-  blocks,
-  depth,
-  ...rest
-}: {
-  blocks: Block[]
-  depth: number
-  onSpans: (id: string, content: Span[]) => void
-  onKey: (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => void
-  onFocus: (id: string) => void
-  focusedId: string | null
-}) {
-  let run = 0
-  return (
-    <>
-      {blocks.map((b) => {
-        run = b.type === 'numbered' ? run + 1 : 0
-        return (
-          <div key={b.id}>
-            <EditorBlock block={b} depth={depth} index={run} {...rest} />
-            {b.children.length > 0 && <BlockList blocks={b.children} depth={depth + 1} {...rest} />}
-          </div>
-        )
-      })}
-    </>
-  )
-}
-
-function ScriptEditor({
-  script,
-  onChange,
-  onBack,
-}: {
-  script: Script
-  onChange: (next: Script) => void
-  onBack: () => void
-}) {
-  const [blocks, setBlocks] = useState<Block[]>(script.blocks)
-  const [title, setTitle] = useState(script.title)
-  const [dirty, setDirty] = useState(false)
-  const [focusedId, setFocusedId] = useState<string | null>(null)
-  const [slash, setSlash] = useState<{ id: string; at: number; filter: string; active: number } | null>(null)
-  // Carries its own block id: keying the toolbar off a separately tracked focusedId meant
-  // a selection made without a fresh focus event never showed it.
-  const [toolbar, setToolbar] = useState<{
-    id: string
-    top: number
-    left: number
-    marks: Record<Mark, boolean>
-  } | null>(null)
-
-  const caret = useRef<Cmd | null>(null)
-  const past = useRef<Block[][]>([])
-  const future = useRef<Block[][]>([])
-
-  // Autosave: the timer restarts on every keystroke, so it writes once typing stops.
-  useEffect(() => {
-    if (!dirty) return
-    const t = setTimeout(() => {
-      onChange({ ...script, title: title.trim(), blocks, updatedAt: new Date().toISOString() })
-      setDirty(false)
-    }, 500)
-    return () => clearTimeout(t)
-  }, [dirty, blocks, title])
-
-  // Before paint, so a caret never visibly lands in the wrong place first.
-  useLayoutEffect(() => {
-    const want = caret.current
-    if (!want) return
-    caret.current = null
-    const el = blockEl(want.id)
-    if (el) {
-      el.focus()
-      placeCaret(el, want.from, want.to ?? want.from)
-    }
-  }, [blocks])
-
-  // The floating toolbar follows any non-empty selection inside a block.
-  useEffect(() => {
-    const onSel = () => {
-      const sel = getSelection()
-      if (!sel || sel.isCollapsed || !sel.rangeCount) return setToolbar(null)
-      // anchorNode is a text node while typing, but the block element itself right after
-      // we rewrite one — resolve from whichever it is before walking up.
-      const node = sel.anchorNode
-      const from = node instanceof HTMLElement ? node : (node?.parentElement ?? null)
-      const el = from?.closest('[data-block]')
-      if (!(el instanceof HTMLElement)) return setToolbar(null)
-      const range = selectionIn(el)
-      const block = findBlock(blocks, el.dataset.block ?? '')
-      if (!range || !block || range.from === range.to) return setToolbar(null)
-      const r = sel.getRangeAt(0).getBoundingClientRect()
-      const marks = Object.fromEntries(
-        MARKS.map((m) => [m, hasMark(block.content, range.from, range.to, m)]),
-      ) as Record<Mark, boolean>
-      setToolbar({ id: block.id, top: Math.max(r.top - 46, 8), left: Math.max(r.left, 8), marks })
-    }
-    document.addEventListener('selectionchange', onSel)
-    return () => document.removeEventListener('selectionchange', onSel)
-  }, [blocks])
-
-  const commit = (next: Block[], remember = true) => {
-    if (remember) {
-      past.current = [...past.current.slice(-99), blocks]
-      future.current = []
-    }
-    setBlocks(next)
-    setDirty(true)
-  }
-
-  const setContent = (id: string, content: Span[]) =>
-    commit(mapBlock(blocks, id, (b) => ({ ...b, content })), false)
-
-  const setType = (id: string, type: BlockType) =>
-    commit(mapBlock(blocks, id, (b) => ({ ...b, type, content: b.content })))
-
-  /** The live selection in a block, falling back to the caret. */
-  const rangeOf = (id: string) => {
-    const el = blockEl(id)
-    return el ? (selectionIn(el) ?? { from: 0, to: 0 }) : { from: 0, to: 0 }
-  }
-
-  const toggleMark = (id: string, mark: Mark) => {
-    const block = findBlock(blocks, id)
-    if (!block) return
-    const { from, to } = rangeOf(id)
-    if (from === to) return
-    const on = !hasMark(block.content, from, to, mark)
-    commit(mapBlock(blocks, id, (b) => ({ ...b, content: applyMark(b.content, from, to, mark, on) })))
-    caret.current = { id, from, to }
-  }
-
-  const setColor = (id: string, kind: 'color' | 'bg', name: string) => {
-    const { from, to } = rangeOf(id)
-    if (from === to) return
-    commit(
-      mapBlock(blocks, id, (b) => ({
-        ...b,
-        content: applyMark(b.content, from, to, kind, name === 'default' ? undefined : name),
-      })),
-    )
-    caret.current = { id, from, to }
-    setToolbar(null)
-  }
-
-  /** Block shortcut, then inline rule, then the slash trigger. */
-  const onSpans = (id: string, content: Span[]) => {
-    const text = spanText(content)
-    const el = blockEl(id)
-    const at = el ? (selectionIn(el)?.to ?? text.length) : text.length
-
-    const shortcut = BLOCK_SHORTCUTS.find(([re]) => re.test(text))
-    if (shortcut) {
-      const [, type] = shortcut
-      if (type === 'divider') {
-        const fresh = emptyBlock()
-        commit(
-          insertAfter(
-            mapBlock(blocks, id, (b) => ({ ...b, type: 'divider', content: [] })),
-            id,
-            [fresh],
-          ),
-        )
-        caret.current = { id: fresh.id, from: 0 }
-        return
-      }
-      commit(mapBlock(blocks, id, (b) => ({ ...b, type, content: [] })))
-      caret.current = { id, from: 0 }
-      return
-    }
-
-    for (const [re, mark] of INLINE_RULES) {
-      const m = re.exec(text.slice(0, at))
-      if (!m) continue
-      const start = at - m[0].length
-      const inner = m[1]
-      commit(
-        mapBlock(blocks, id, (b) => ({
-          ...b,
-          content: concatSpans(
-            sliceSpans(content, 0, start),
-            [{ text: inner, [mark]: true }],
-            sliceSpans(content, at),
-          ),
-        })),
-        false,
-      )
-      caret.current = { id, from: start + inner.length }
-      return
-    }
-
-    setContent(id, content)
-
-    // "/" at the start, or after a space, opens the menu.
-    const before = text.slice(0, at)
-    const hit = /(?:^|\s)\/([\w]*)$/.exec(before)
-    if (hit) setSlash({ id, at: at - hit[1].length - 1, filter: hit[1], active: 0 })
-    else if (slash?.id === id) setSlash(null)
-  }
-
-  const pickSlash = (type: BlockType) => {
-    if (!slash) return
-    const block = findBlock(blocks, slash.id)
-    if (!block) return
-    // Drop the "/query" that opened the menu.
-    const cleaned = concatSpans(
-      sliceSpans(block.content, 0, slash.at),
-      sliceSpans(block.content, slash.at + 1 + slash.filter.length),
-    )
-    if (type === 'divider') {
-      const fresh = emptyBlock()
-      commit(
-        insertAfter(
-          mapBlock(blocks, slash.id, (b) => ({ ...b, type: 'divider', content: [] })),
-          slash.id,
-          [fresh],
-        ),
-      )
-      caret.current = { id: fresh.id, from: 0 }
-    } else {
-      commit(mapBlock(blocks, slash.id, (b) => ({ ...b, type, content: cleaned })))
-      caret.current = { id: slash.id, from: slash.at }
-    }
-    setSlash(null)
-  }
-
-  const onKey = (e: React.KeyboardEvent<HTMLDivElement>, block: Block, depth: number) => {
-    const meta = e.metaKey || e.ctrlKey
-    const id = block.id
-    const text = spanText(block.content)
-    const here = rangeOf(id)
-
-    if (slash?.id === id) {
-      const items = SLASH_ITEMS.filter((i) =>
-        (i.name + i.type).toLowerCase().includes(slash.filter.toLowerCase()),
-      )
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        const dir = e.key === 'ArrowDown' ? 1 : -1
-        return setSlash({ ...slash, active: (slash.active + dir + items.length) % items.length })
-      }
-      if (e.key === 'Enter' && items.length) {
-        e.preventDefault()
-        return pickSlash(items[slash.active % items.length].type)
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        return setSlash(null)
-      }
-    }
-
-    if (meta && e.altKey) {
-      const map: Record<string, BlockType> = {
-        '0': 'paragraph',
-        '1': 'h1',
-        '2': 'h2',
-        '3': 'h3',
-        '5': 'bulleted',
-        '6': 'numbered',
-      }
-      const type = map[e.key]
-      if (type) {
-        e.preventDefault()
-        setType(id, type)
-        caret.current = { id, from: here.from }
-        return
-      }
-    }
-
-    if (meta && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-      e.preventDefault()
-      commit(moveBlock(blocks, id, e.key === 'ArrowUp' ? -1 : 1))
-      caret.current = { id, from: here.from }
-      return
-    }
-
-    if (meta && !e.shiftKey && e.key.toLowerCase() === 'd') {
-      e.preventDefault()
-      commit(duplicateBlock(blocks, id))
-      return
-    }
-
-    if (meta && e.key.toLowerCase() === 'z') {
-      e.preventDefault()
-      if (e.shiftKey) {
-        const next = future.current.pop()
-        if (next) {
-          past.current = [...past.current, blocks]
-          setBlocks(next)
-          setDirty(true)
-        }
-      } else {
-        const prev = past.current.pop()
-        if (prev) {
-          future.current = [...future.current, blocks]
-          setBlocks(prev)
-          setDirty(true)
-        }
-      }
-      return
-    }
-
-    if (meta) {
-      const mark: Mark | null =
-        e.key.toLowerCase() === 'b' && !e.shiftKey
-          ? 'bold'
-          : e.key.toLowerCase() === 'i'
-            ? 'italic'
-            : e.key.toLowerCase() === 'u'
-              ? 'underline'
-              : e.shiftKey && e.key.toLowerCase() === 's'
-                ? 'strike'
-                : e.key.toLowerCase() === 'e'
-                  ? 'code'
-                  : null
-      if (mark) {
-        e.preventDefault()
-        toggleMark(id, mark)
-        return
-      }
-    }
-
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      commit(e.shiftKey ? outdentBlock(blocks, id) : indentBlock(blocks, id))
-      caret.current = { id, from: here.from }
-      return
-    }
-
-    if (e.key === 'Enter' && !e.shiftKey) {
-      if (block.type === 'code' && text) return // a newline is content in a code block
-      e.preventDefault()
-
-      // Empty and formatted: step out one level, then out of the type.
-      if (!text && block.type !== 'paragraph') {
-        if (depth > 0) commit(outdentBlock(blocks, id))
-        else commit(mapBlock(blocks, id, (b) => ({ ...b, type: 'paragraph' })))
-        caret.current = { id, from: 0 }
-        return
-      }
-
-      // A heading is followed by body text, never another heading.
-      const carry: BlockType = LIST_TYPES.includes(block.type) ? block.type : 'paragraph'
-      const fresh: Block = {
-        ...emptyBlock(carry),
-        content: sliceSpans(block.content, here.from),
-      }
-      const trimmed = mapBlock(blocks, id, (b) => ({
-        ...b,
-        content: sliceSpans(b.content, 0, here.from),
-      }))
-      // Children belong under the block, so a new sibling goes above them.
-      const parent = findBlock(trimmed, id)
-      const next = parent?.children.length
-        ? mapBlock(trimmed, id, (b) => ({ ...b, children: [fresh, ...b.children] }))
-        : insertAfter(trimmed, id, [fresh])
-      commit(next)
-      caret.current = { id: fresh.id, from: 0 }
-      return
-    }
-
-    if (e.key === 'Backspace' && here.from === 0 && here.to === 0) {
-      if (slash?.id === id) setSlash(null)
-      // Strip the formatting first, then the indent, then merge.
-      if (block.type !== 'paragraph') {
-        e.preventDefault()
-        setType(id, 'paragraph')
-        caret.current = { id, from: 0 }
-        return
-      }
-      if (depth > 0) {
-        e.preventDefault()
-        commit(outdentBlock(blocks, id))
-        caret.current = { id, from: 0 }
-        return
-      }
-      const above = blockAbove(blocks, id)
-      if (!above) return
-      e.preventDefault()
-      if (above.type === 'divider') {
-        commit(removeBlock(blocks, above.id))
-        caret.current = { id, from: 0 }
-        return
-      }
-      const joinAt = spanText(above.content).length
-      commit(
-        removeBlock(
-          mapBlock(blocks, above.id, (b) => ({
-            ...b,
-            content: concatSpans(b.content, block.content),
-            children: [...b.children, ...block.children],
-          })),
-          id,
-        ),
-      )
-      caret.current = { id: above.id, from: joinAt }
-    }
-  }
-
-  const words = wordCount(blocks)
-  const mins = readingMinutes(words)
-  const flat = flattenBlocks(blocks)
-
-  return (
-    <div className="pt-1">
-      <div className="flex items-center gap-3 pb-2">
-        <button
-          onClick={onBack}
-          aria-label="Back to scripts"
-          className="-ml-1 shrink-0 rounded-full p-1 text-[var(--muted)] transition-colors hover:text-[var(--text)]"
-        >
-          <ChevronLeft size={20} />
-        </button>
-        <span className="text-[13px] text-[var(--muted)] tabular-nums">
-          {words} {words === 1 ? 'word' : 'words'}
-          {mins > 0 && ` · ${mins} min`}
-        </span>
-        <span className="ml-auto text-[13px] text-[var(--faint)]">
-          {dirty ? 'Saving…' : 'Saved'}
-        </span>
-      </div>
-
-      <input
-        value={title}
-        onChange={(e) => {
-          setTitle(e.target.value)
-          setDirty(true)
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== 'Enter') return
-          e.preventDefault()
-          const first = flat[0]
-          if (first) caret.current = { id: first.block.id, from: 0 }
-          const el = first && blockEl(first.block.id)
-          if (el) {
-            el.focus()
-            placeCaret(el, 0)
-          }
-        }}
-        placeholder="Untitled"
-        className="w-full bg-transparent pt-2 pb-2 text-[36px] leading-tight font-bold tracking-tight outline-none placeholder:text-[var(--ghost)]"
-      />
-
-      <div className="relative pb-32">
-        <BlockList
-          blocks={blocks}
-          depth={0}
-          onSpans={onSpans}
-          onKey={onKey}
-          onFocus={setFocusedId}
-          focusedId={focusedId}
-        />
-        {slash && (
-          <SlashMenu filter={slash.filter} active={slash.active} onPick={pickSlash} />
-        )}
-      </div>
-
-      {toolbar && (
-        <SelectionToolbar
-          rect={toolbar}
-          marks={toolbar.marks}
-          onMark={(m) => toggleMark(toolbar.id, m)}
-          onTurn={(t) => {
-            setType(toolbar.id, t)
-            setToolbar(null)
-          }}
-          onColor={(kind, name) => setColor(toolbar.id, kind, name)}
-        />
-      )}
-    </div>
-  )
-}
-
-function ScriptsView({
-  scripts,
-  setScripts,
-  openId,
-  setOpenId,
-}: {
-  scripts: Script[]
-  setScripts: (s: Script[]) => void
-  openId: string | null
-  setOpenId: (id: string | null) => void
-}) {
-  const [title, setTitle] = useState('')
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
-
-  const open = scripts.find((s) => s.id === openId)
-
-  const add = () => {
-    if (!title.trim()) return
-    const script: Script = {
-      id: crypto.randomUUID(),
-      title: title.trim(),
-      status: 'Idea',
-      blocks: [emptyBlock()],
-      updatedAt: new Date().toISOString(),
-    }
-    setScripts([script, ...scripts])
-    setTitle('')
-    setOpenId(script.id)
-  }
-
-  // Same shape as the Buy list: headers and empty-section ghosts are sortable members,
-  // which is what lets a drag across a boundary reassign the status.
-  const rows = useMemo(() => buildRows(scripts, SCRIPT_STATUSES, (s) => s.status), [scripts])
-
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over) return
-    const ids = rows.map(rowId)
-    const from = ids.indexOf(String(active.id))
-    const to = ids.indexOf(String(over.id))
-    if (from < 0 || to < 0 || from === to) return
-    setScripts(
-      applyDrag(scripts, rows, from, to, SCRIPT_STATUSES, (s, status) => ({
-        ...s,
-        status: status as ScriptStatus,
-      })),
-    )
-  }
-
-  if (open)
-    return (
-      <ScriptEditor
-        script={open}
-        onBack={() => setOpenId(null)}
-        onChange={(next) => setScripts(scripts.map((s) => (s.id === next.id ? next : s)))}
-      />
-    )
-
-  return (
-    <>
-      <div className="rounded-2xl bg-[var(--card)] px-4 py-1">
-        <div className="flex items-center gap-2">
-          <span className="text-[20px] leading-none text-[var(--faint)]">+</span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && add()}
-            placeholder="New script"
-            className="w-full bg-transparent py-3 text-[17px] tracking-tight outline-none"
-          />
-        </div>
-      </div>
-
-      {scripts.length === 0 ? (
-        <p className="px-1 pt-6 text-[17px] text-[var(--muted)]">
-          Nothing written yet. Name the first one.
-        </p>
-      ) : (
-        <div className="pt-2">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            modifiers={[restrictToVerticalAxis]}
-            onDragEnd={onDragEnd}
-          >
-            <SortableContext items={rows.map(rowId)} strategy={verticalListSortingStrategy}>
-              <AnimatePresence initial={false}>
-                {rows.map((r) =>
-                  r.kind === 'header' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
-                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
-                        <span
-                          className="size-1.5 shrink-0 rounded-full"
-                          style={{ background: STATUS_COLOR[r.section as ScriptStatus] }}
-                        />
-                        {r.section}
-                      </h2>
-                    </Slot>
-                  ) : r.kind === 'ghost' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable>
-                      <p className="px-1 py-2 text-[13px] text-[var(--ghost)]">Nothing here</p>
-                    </Slot>
-                  ) : (
-                    <ScriptRow
-                      key={r.item.id}
-                      script={r.item}
-                      onOpen={() => setOpenId(r.item.id)}
-                      onDelete={() => setScripts(scripts.filter((s) => s.id !== r.item.id))}
-                    />
-                  ),
-                )}
-              </AnimatePresence>
-            </SortableContext>
-          </DndContext>
-        </div>
-      )}
-    </>
-  )
-}
-
-function ScriptRow({
-  script,
-  onOpen,
-  onDelete,
-}: {
-  script: Script
-  onOpen: () => void
-  onDelete: () => void
-}) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
-    useSortable({ id: script.id })
-  const words = wordCount(script.blocks)
-  const mins = readingMinutes(words)
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(transform),
-        transition,
-        zIndex: isDragging ? 10 : undefined,
-        position: 'relative',
-      }}
-    >
-      <motion.div
-        exit={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        className="mb-2.5 flex touch-pan-y items-center gap-2.5 overflow-hidden rounded-2xl bg-[var(--card)] py-3 pr-4 pl-2"
-        style={isDragging ? { background: 'var(--card-2)' } : undefined}
-      >
-        <button
-          ref={setActivatorNodeRef}
-          {...attributes}
-          {...listeners}
-          aria-label="Reorder"
-          className={`${TAP} shrink-0 cursor-grab p-1 text-[var(--faint)] active:cursor-grabbing`}
-          style={{ touchAction: 'none' }}
-        >
-          <GripVertical size={18} />
-        </button>
-
-        <button onClick={onOpen} className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-[17px] tracking-tight">
-            {script.title || 'Untitled script'}
-          </span>
-          <span className="flex items-center gap-2 pt-1 text-[13px] text-[var(--muted)]">
-            <span
-              className="shrink-0 rounded-full px-2 py-0.5 text-[11px] leading-none font-semibold"
-              style={{
-                background: `${STATUS_COLOR[script.status]}1F`,
-                color: STATUS_COLOR[script.status],
-              }}
-            >
-              {script.status}
-            </span>
-            <span className="min-w-0 truncate tabular-nums">
-              {words} {words === 1 ? 'word' : 'words'}
-              {mins > 0 && ` · ${mins} min`} · {relativeTime(script.updatedAt)}
-            </span>
-          </span>
-        </button>
-
-        <button
-          onPointerDown={(e) => e.preventDefault()}
-          onClick={onDelete}
-          aria-label={`Delete ${script.title || 'Untitled script'}`}
-          className="shrink-0 p-1 text-[var(--faint)] transition-colors hover:text-[#FF3B30]"
-        >
-          <X size={16} />
-        </button>
-      </motion.div>
     </div>
   )
 }
