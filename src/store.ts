@@ -86,7 +86,16 @@ export type Payment = {
   group?: string
   /** Kept but not counted — for something cancelled or on hold. */
   paused?: boolean
+  /**
+   * Day of the month it renews, 1–31. Day-of-month rather than a full date because these
+   * repeat monthly forever; a stored date would be stale after the first cycle. A month
+   * too short for the day bills on its last day, which is what card issuers do.
+   */
+  dueDay?: number
 }
+
+/** A renewal this close counts as urgent: enough warning to move money, not enough to ignore. */
+export const URGENT_DAYS = 3
 
 // `order` is the array index — the list is the order. Export/import carries it implicitly.
 
@@ -207,12 +216,65 @@ export function parsePayments(raw: unknown): Payment[] {
         amount: amount < 0 ? 0 : amount,
         group: cleanTag(o.group),
         paused: o.paused === true ? true : undefined,
+        // 1–31 only. Anything else means "no date", never a silently wrong one.
+        dueDay:
+          typeof o.dueDay === 'number' && isFinite(o.dueDay) && o.dueDay >= 1 && o.dueDay <= 31
+            ? Math.round(o.dueDay)
+            : undefined,
       },
     ]
   })
 }
 
 export const UNGROUPED = 'Other'
+
+const daysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate()
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
+
+/**
+ * The next time a monthly due-day comes round. Today counts as due today, not next month —
+ * the day you have to have the money is the day itself.
+ *
+ * A day past the end of a short month falls back to that month's last day, so a 31st
+ * subscription bills on the 28th in February rather than silently skipping it.
+ */
+export function nextDue(dueDay: number, now: Date = new Date()): Date {
+  const day = Math.min(Math.max(Math.round(dueDay), 1), 31)
+  const on = (y: number, m: number) => new Date(y, m, Math.min(day, daysInMonth(y, m)))
+  const thisMonth = on(now.getFullYear(), now.getMonth())
+  return thisMonth >= startOfDay(now) ? thisMonth : on(now.getFullYear(), now.getMonth() + 1)
+}
+
+/** Whole days from today to the next renewal. 0 means it is due today. */
+export const daysUntilDue = (dueDay: number, now: Date = new Date()): number =>
+  Math.round((nextDue(dueDay, now).getTime() - startOfDay(now).getTime()) / 86400000)
+
+export type Upcoming = { payment: Payment; due: Date; days: number }
+
+/**
+ * Every dated, unpaused commitment in the order it will actually hit the account. A
+ * payment with no date cannot be planned around, so it is not in this list — it still
+ * counts toward the monthly floor.
+ */
+export function upcomingPayments(payments: Payment[], now: Date = new Date()): Upcoming[] {
+  return payments
+    .flatMap((payment) =>
+      payment.paused || !payment.dueDay
+        ? []
+        : [{ payment, due: nextDue(payment.dueDay, now), days: daysUntilDue(payment.dueDay, now) }],
+    )
+    .sort((a, b) => a.days - b.days || b.payment.amount - a.payment.amount)
+}
+
+/** What is about to leave the account, and how much of it. Drives the launch tab. */
+export function dueSoon(
+  payments: Payment[],
+  now: Date = new Date(),
+  within: number = URGENT_DAYS,
+): { rows: Upcoming[]; total: number } {
+  const rows = upcomingPayments(payments, now).filter((u) => u.days <= within)
+  return { rows, total: rows.reduce((s, u) => s + u.payment.amount, 0) }
+}
 
 export type PaymentGroup = { group: string; total: number; rows: Payment[] }
 

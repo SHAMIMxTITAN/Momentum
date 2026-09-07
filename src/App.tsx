@@ -30,6 +30,9 @@ import {
   glimpse,
   isOverdue,
   groupPayments,
+  upcomingPayments,
+  dueSoon,
+  URGENT_DAYS,
   monthlySpend,
   isDone,
   useDayTick,
@@ -100,9 +103,11 @@ export default function App() {
   // than whenever the next tap or sync happens to repaint it.
   useDayTick()
   const theme = useTheme()
-  // To-do opens first: it is the tab with something to do *today*. It also sits in the
-  // middle, so the first swipe works in either direction.
-  const [tab, setTab] = useState<Tab>('To-do')
+  // Launch tab: a renewal about to hit the account outranks everything, because the whole
+  // point is being reminded before the money is gone. Otherwise To-do, which is the tab
+  // with something to do today. Computed once on mount so it never yanks the tab away
+  // mid-use.
+  const [tab, setTab] = useState<Tab>(() => (dueSoon(payments).rows.length ? 'Spending' : 'To-do'))
   const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
 
   const pager = useRef<HTMLDivElement>(null)
@@ -121,11 +126,12 @@ export default function App() {
     el?.scrollTo({ left: TABS.indexOf(t) * el.clientWidth, behavior: 'smooth' })
   }
 
-  // Open on To-do. Jumps rather than scrolls, and before paint, so the first frame is
+  // Jump to the launch tab rather than scroll, and before paint, so the first frame is
   // already the right page — a smooth scroll here would look like a glitch on load.
+  // Empty deps on purpose: this is the opening position, not a follower of `tab`.
   useLayoutEffect(() => {
     const el = pager.current
-    if (el) el.scrollLeft = TABS.indexOf('To-do') * el.clientWidth
+    if (el) el.scrollLeft = TABS.indexOf(tab) * el.clientWidth
   }, [])
 
   useEffect(() => {
@@ -1461,11 +1467,37 @@ function SpendView({
   setPayments: (p: Payment[]) => void
 }) {
   const months = useMemo(() => monthlySpend(items), [items])
+  // Upcoming leads: money you still have to keep is more urgent than money already gone.
+  const [view, setView] = useState<'Upcoming' | 'Spent'>('Upcoming')
+  const soon = useMemo(() => dueSoon(payments), [payments])
 
   return (
     <>
-      <MustPayments payments={payments} setPayments={setPayments} />
-      <MonthHistory months={months} />
+      <div className="flex gap-1 rounded-full bg-[var(--card)] p-1">
+        {(['Upcoming', 'Spent'] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className="flex-1 rounded-full py-1.5 text-[14px] font-semibold tracking-tight transition-colors"
+            style={
+              view === v
+                ? { background: 'var(--card-2)', color: 'var(--text)' }
+                : { color: 'var(--muted)' }
+            }
+          >
+            {v}
+            {v === 'Upcoming' && soon.rows.length > 0 && (
+              <span className="ml-1.5 text-[#FF3B30]">•</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {view === 'Upcoming' ? (
+        <MustPayments payments={payments} setPayments={setPayments} />
+      ) : (
+        <MonthHistory months={months} />
+      )}
     </>
   )
 }
@@ -1474,6 +1506,17 @@ function SpendView({
  * Deliberately unlike the rest of the app: one dark slab stating the monthly floor, then a
  * plain ledger. These are commitments, not choices, so they get no cards, pills or drag.
  */
+
+/** 1-31 out of whatever was typed, or undefined for "no date". */
+const dueDayFrom = (raw: string): number | undefined => {
+  const n = Math.round(parseFloat(raw))
+  return isFinite(n) && n >= 1 && n <= 31 ? n : undefined
+}
+
+/** Short enough for a fixed-width column, and "Today" is the one that must stand out. */
+const dueLabel = (days: number): string =>
+  days === 0 ? "Today" : days === 1 ? "Tomorrow" : `${days}d`
+
 function MustPayments({
   payments,
   setPayments,
@@ -1484,9 +1527,12 @@ function MustPayments({
   const [name, setName] = useState('')
   const [amount, setAmount] = useState('')
   const [group, setGroup] = useState('')
+  const [due, setDue] = useState('')
   const [open, setOpen] = useState(false)
 
   const { groups, monthly, activeCount } = useMemo(() => groupPayments(payments), [payments])
+  const upcoming = useMemo(() => upcomingPayments(payments), [payments])
+  const soon = useMemo(() => dueSoon(payments), [payments])
   const knownGroups = useMemo(
     () => [...new Set(payments.flatMap((p) => (p.group ? [p.group] : [])))].sort(),
     [payments],
@@ -1497,10 +1543,17 @@ function MustPayments({
     if (!name.trim() || !isFinite(value)) return
     setPayments([
       ...payments,
-      { id: crypto.randomUUID(), name: name.trim(), amount: value, group: cleanTag(group) },
+      {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        amount: value,
+        group: cleanTag(group),
+        dueDay: dueDayFrom(due),
+      },
     ])
     setName('')
     setAmount('')
+    setDue('')
   }
 
   const patch = (id: string, next: Partial<Payment>) =>
@@ -1523,6 +1576,49 @@ function MustPayments({
             : `${activeCount} commitment${activeCount === 1 ? '' : 's'} before anything else`}
         </p>
       </div>
+
+      {/* The whole point of the tab: what is about to leave the account, before the
+          ledger of what you pay in general. Ordered by date, soonest first. */}
+      {upcoming.length > 0 && (
+        <div className="pt-4">
+          <h3 className="px-1 pb-1.5 text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
+            Coming up
+          </h3>
+          <div className="overflow-hidden rounded-2xl bg-[var(--card)]">
+            {upcoming.slice(0, 6).map((u, i) => {
+              const urgent = u.days <= URGENT_DAYS
+              return (
+                <div
+                  key={u.payment.id}
+                  className="flex items-center gap-3 px-4 py-2.5"
+                  style={{ boxShadow: i ? 'inset 0 0.5px 0 var(--separator)' : undefined }}
+                >
+                  <span
+                    className="w-11 shrink-0 text-[13px] font-semibold tabular-nums"
+                    style={{ color: urgent ? '#FF3B30' : 'var(--muted)' }}
+                  >
+                    {dueLabel(u.days)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[16px] tracking-tight">
+                    {u.payment.name}
+                  </span>
+                  <span className="shrink-0 text-[13px] text-[var(--muted)] tabular-nums">
+                    {u.due.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
+                  </span>
+                  <span className="shrink-0 text-[16px] tabular-nums">
+                    {money(u.payment.amount)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          {soon.rows.length > 0 && (
+            <p className="px-1 pt-2 text-[13px] text-[#FF3B30]">
+              {money(soon.total)} leaves your account within {URGENT_DAYS} days — keep it there.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* <details> rather than a useState toggle: the disclosure, the keyboard and the
           accessibility semantics are all free, and the group total stays readable shut —
@@ -1592,6 +1688,15 @@ function MustPayments({
             inputMode="decimal"
             placeholder="Amount"
             className={`${FIELD} w-24 shrink-0`}
+          />
+          <input
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+            inputMode="numeric"
+            placeholder="Day"
+            title="Day of the month it renews, 1–31"
+            className={`${FIELD} w-16 shrink-0`}
           />
           <input
             value={group}

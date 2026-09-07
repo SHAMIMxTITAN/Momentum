@@ -5,6 +5,10 @@ import {
   applyItemDrag,
   glimpse,
   groupPayments,
+  nextDue,
+  daysUntilDue,
+  upcomingPayments,
+  dueSoon,
   buildItemRows,
   importance,
   isDone,
@@ -514,4 +518,64 @@ test('msUntilMidnight counts to the next LOCAL midnight, not UTC', () => {
   // month and year rollovers
   assert.equal(mins(at('2026-08-31T23:30:00')), 30)
   assert.equal(mins(at('2026-12-31T23:30:00')), 30)
+})
+
+/* ------------------------------------------------------ renewal dates */
+
+const sub = (id: string, amount: number, dueDay?: number, paused?: boolean) => ({
+  id, name: id, amount, dueDay, paused,
+})
+
+test('nextDue treats today as due today, not next month', () => {
+  const now = new Date('2026-09-07T14:00:00')
+  assert.equal(nextDue(7, now).toDateString(), new Date('2026-09-07').toDateString())
+  assert.equal(daysUntilDue(7, now), 0)
+  assert.equal(daysUntilDue(10, now), 3)
+  assert.equal(daysUntilDue(6, now), 29, 'yesterday means next month, not the past')
+})
+
+test('nextDue rolls into the next month and the next year', () => {
+  assert.equal(nextDue(1, new Date('2026-09-15')).toDateString(), new Date('2026-10-01').toDateString())
+  assert.equal(nextDue(3, new Date('2026-12-20')).toDateString(), new Date('2027-01-03').toDateString())
+})
+
+test('a 31st subscription bills on the last day of a short month', () => {
+  // February 2027 has 28 days
+  assert.equal(nextDue(31, new Date('2027-02-10')).toDateString(), new Date('2027-02-28').toDateString())
+  // April has 30
+  assert.equal(nextDue(31, new Date('2027-04-05')).toDateString(), new Date('2027-04-30').toDateString())
+  // and a leap February has 29
+  assert.equal(nextDue(31, new Date('2028-02-10')).toDateString(), new Date('2028-02-29').toDateString())
+})
+
+test('upcomingPayments orders by what hits the account first, and skips undated and paused', () => {
+  const now = new Date('2026-09-07T09:00:00')
+  const rows = upcomingPayments(
+    [sub('later', 100, 20), sub('today', 200, 7), sub('soon', 50, 9),
+     sub('undated', 999), sub('paused', 999, 8, true)],
+    now,
+  )
+  assert.deepEqual(rows.map((r) => r.payment.id), ['today', 'soon', 'later'])
+  assert.deepEqual(rows.map((r) => r.days), [0, 2, 13])
+})
+
+test('dueSoon totals only what lands inside the window', () => {
+  const now = new Date('2026-09-07T09:00:00')
+  const list = [sub('a', 500, 7), sub('b', 300, 9), sub('c', 900, 25)]
+  const { rows, total } = dueSoon(list, now, 3)
+  assert.deepEqual(rows.map((r) => r.payment.id), ['a', 'b'])
+  assert.equal(total, 800, 'the one 18 days out is not money you need this week')
+  assert.equal(dueSoon(list, now, 0).total, 500, 'a zero-day window is just today')
+  assert.equal(dueSoon([sub('undated', 400)], now, 3).rows.length, 0)
+})
+
+test('parsePayments keeps a valid dueDay and drops an impossible one', () => {
+  const out = parsePayments([
+    { name: 'ok', amount: 1, dueDay: 15 },
+    { name: 'zero', amount: 1, dueDay: 0 },
+    { name: 'too big', amount: 1, dueDay: 32 },
+    { name: 'text', amount: 1, dueDay: '15' },
+    { name: 'none', amount: 1 },
+  ])
+  assert.deepEqual(out.map((p) => p.dueDay), [15, undefined, undefined, undefined, undefined])
 })
