@@ -1507,6 +1507,46 @@ function SpendView({
  * plain ledger. These are commitments, not choices, so they get no cards, pills or drag.
  */
 
+/**
+ * Close an inline form when the user taps away or puts the keyboard down.
+ *
+ * Two signals, because neither covers the other: a tap on empty background fires
+ * pointerdown but blurs nothing on iOS, and dismissing the keyboard with Done blurs the
+ * input without any tap landing anywhere. Without both, a form opened by a misclick has
+ * no way out except switching tabs.
+ *
+ * `onDismiss` is held in a ref so a new closure each render does not tear the listeners
+ * down and rebuild them on every keystroke.
+ */
+function useDismiss(
+  ref: React.RefObject<HTMLElement | null>,
+  active: boolean,
+  onDismiss: () => void,
+) {
+  const latest = useRef(onDismiss)
+  latest.current = onDismiss
+
+  useEffect(() => {
+    if (!active) return
+    const el = ref.current
+    const outside = (e: PointerEvent) => {
+      if (el && e.target instanceof Node && !el.contains(e.target)) latest.current()
+    }
+    // focusout fires before the next focus lands, so read activeElement a tick later.
+    const left = () =>
+      setTimeout(() => {
+        if (el && !el.contains(document.activeElement)) latest.current()
+      }, 0)
+
+    document.addEventListener('pointerdown', outside)
+    el?.addEventListener('focusout', left)
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      el?.removeEventListener('focusout', left)
+    }
+  }, [active, ref])
+}
+
 /** 1-31 out of whatever was typed, or undefined for "no date". */
 const dueDayFrom = (raw: string): number | undefined => {
   const n = Math.round(parseFloat(raw))
@@ -1529,6 +1569,7 @@ function MustPayments({
   const [group, setGroup] = useState('')
   const [due, setDue] = useState('')
   const [open, setOpen] = useState(false)
+  const form = useRef<HTMLDivElement>(null)
 
   const { groups, monthly, activeCount } = useMemo(() => groupPayments(payments), [payments])
   const upcoming = useMemo(() => upcomingPayments(payments), [payments])
@@ -1555,6 +1596,13 @@ function MustPayments({
     setAmount('')
     setDue('')
   }
+
+  // Tapping away commits a finished entry rather than throwing the typing out, and just
+  // closes an empty one — which is the misclick case.
+  useDismiss(form, open, () => {
+    add()
+    setOpen(false)
+  })
 
   const patch = (id: string, next: Partial<Payment>) =>
     setPayments(payments.map((p) => (p.id === id ? { ...p, ...next } : p)))
@@ -1672,7 +1720,10 @@ function MustPayments({
       ))}
 
       {open ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl bg-[var(--card)] p-3">
+        <div
+          ref={form}
+          className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl bg-[var(--card)] p-3"
+        >
           <input
             autoFocus
             value={name}
@@ -1800,6 +1851,7 @@ function BudgetGauge({ total }: { total: number }) {
   const { budget, setBudget } = useBudget()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(budget ? String(budget) : '')
+  const box = useRef<HTMLDivElement>(null)
 
   const save = () => {
     const v = parseFloat(draft)
@@ -1807,9 +1859,13 @@ function BudgetGauge({ total }: { total: number }) {
     setEditing(false)
   }
 
+  // Same rule as the payment form: tapping away keeps a typed number rather than
+  // discarding it, and an untouched field just closes.
+  useDismiss(box, editing, save)
+
   if (editing)
     return (
-      <div className="flex items-center gap-2 pt-3">
+      <div ref={box} className="flex items-center gap-2 pt-3">
         <input
           autoFocus
           value={draft}
