@@ -52,7 +52,31 @@ export type Todo = {
    * English lesson another. One-offs have no accent at all and never get one.
    */
   color?: string
+  /**
+   * Which band of standing tasks this belongs to. Only meaningful on a daily: the prayers
+   * are fixed and non-negotiable, everything else is a habit, and reading them as one
+   * undifferentiated stack was the complaint. A one-off has no group.
+   */
+  group?: DailyGroup
 }
+
+/**
+ * The two bands of standing tasks. A closed set rather than free text: there are exactly
+ * two kinds of thing here and a segmented control beats a text field on a phone. Adding a
+ * third later is one string.
+ */
+export const DAILY_GROUPS = ['Namaz', 'Daily'] as const
+export type DailyGroup = (typeof DAILY_GROUPS)[number]
+
+/**
+ * The five daily prayers, in the order they fall. Used only to sort an existing list into
+ * its two bands on first read, so eight tasks do not have to be retyped — spellings vary,
+ * so the common ones are all here.
+ */
+const PRAYERS = /^(fajr|fajar|zuhar|zuhr|dhuhr|duhur|asr|asar|maghrib|magrib|isha|esha|isha'a)$/i
+
+/** Namaz if the title is a prayer, otherwise a habit. Only ever applied to a daily. */
+const groupFor = (title: string): DailyGroup => (PRAYERS.test(title.trim()) ? 'Namaz' : 'Daily')
 
 /**
  * A closed set, not a free colour field: it is a whitelist at the trust boundary (an
@@ -190,6 +214,14 @@ export function parseTodos(raw: unknown): Todo[] {
         doneAt: typeof o.doneAt === 'string' ? o.doneAt : undefined,
         important: o.important === true ? true : undefined,
         daily: o.daily === true ? true : undefined,
+        // A daily always lands in a band. An existing list has none, so the prayers are
+        // recognised by name once and everything else becomes a habit.
+        group:
+          o.daily !== true
+            ? undefined
+            : (DAILY_GROUPS as readonly string[]).includes(o.group as string)
+              ? (o.group as DailyGroup)
+              : groupFor(title),
         since: typeof o.since === 'string' ? o.since : undefined,
         // Whitelisted, and only kept on a daily — a one-off has no accent to colour.
         color:

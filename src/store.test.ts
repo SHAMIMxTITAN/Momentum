@@ -579,3 +579,55 @@ test('parsePayments keeps a valid dueDay and drops an impossible one', () => {
   ])
   assert.deepEqual(out.map((p) => p.dueDay), [15, undefined, undefined, undefined, undefined])
 })
+
+/* ------------------------------------------------------- daily task bands */
+
+test('an existing list sorts itself into Namaz and Daily by name, once', () => {
+  const out = parseTodos([
+    { title: 'Fajr', daily: true },
+    { title: 'Zuhar', daily: true },
+    { title: 'Asr', daily: true },
+    { title: 'Maghrib', daily: true },
+    { title: 'Isha', daily: true },
+    { title: 'Gym', daily: true },
+    { title: 'Keyboard practice 30min', daily: true },
+    { title: 'English Practice', daily: true },
+    { title: 'Organise pc file' }, // a one-off gets no band at all
+  ])
+  assert.deepEqual(
+    out.map((t) => `${t.title}:${t.group ?? '-'}`),
+    [
+      'Fajr:Namaz',
+      'Zuhar:Namaz',
+      'Asr:Namaz',
+      'Maghrib:Namaz',
+      'Isha:Namaz',
+      'Gym:Daily',
+      'Keyboard practice 30min:Daily',
+      'English Practice:Daily',
+      'Organise pc file:-',
+    ],
+  )
+})
+
+test('spelling variants and casing still land in Namaz', () => {
+  const out = parseTodos(
+    ['fajar', 'ZUHR', 'Dhuhr', ' asar ', 'Magrib', 'Esha'].map((title) => ({ title, daily: true })),
+  )
+  assert.ok(out.every((t) => t.group === 'Namaz'), out.map((t) => `${t.title}:${t.group}`).join(', '))
+})
+
+test('a band already chosen by hand is never re-guessed from the title', () => {
+  // "Gym" would guess Daily; an explicit Namaz must survive, and vice versa
+  const [gym] = parseTodos([{ title: 'Gym', daily: true, group: 'Namaz' }])
+  assert.equal(gym.group, 'Namaz')
+  const [fajr] = parseTodos([{ title: 'Fajr', daily: true, group: 'Daily' }])
+  assert.equal(fajr.group, 'Daily')
+  const [junk] = parseTodos([{ title: 'Fajr', daily: true, group: 'Nonsense' }])
+  assert.equal(junk.group, 'Namaz', 'an unknown band falls back to the guess')
+})
+
+test('a one-off carries no band even if a file claims one', () => {
+  const [t] = parseTodos([{ title: 'Call the bank', group: 'Namaz' }])
+  assert.equal(t.group, undefined)
+})
