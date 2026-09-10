@@ -32,6 +32,9 @@ import {
   rollOver,
   groupPayments,
   upcomingPayments,
+  isSettled,
+  settle,
+  unsettle,
   dueSoon,
   URGENT_DAYS,
   monthlySpend,
@@ -1637,15 +1640,16 @@ function useDismiss(
   }, [active, ref])
 }
 
-/** 1-31 out of whatever was typed, or undefined for "no date". */
-const dueDayFrom = (raw: string): number | undefined => {
-  const n = Math.round(parseFloat(raw))
-  return isFinite(n) && n >= 1 && n <= 31 ? n : undefined
+/** A yyyy-mm-dd from the date field into an ISO stamp, or nothing if it was left blank. */
+const startedOnFromInput = (raw: string): string | undefined => {
+  if (!raw) return undefined
+  const d = new Date(raw + 'T00:00:00')
+  return isFinite(d.getTime()) ? d.toISOString() : undefined
 }
 
 /** Short enough for a fixed-width column, and "Today" is the one that must stand out. */
 const dueLabel = (days: number): string =>
-  days === 0 ? "Today" : days === 1 ? "Tomorrow" : `${days}d`
+  days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `${days}d`
 
 function MustPayments({
   payments,
@@ -1679,7 +1683,7 @@ function MustPayments({
         name: name.trim(),
         amount: value,
         group: cleanTag(group),
-        dueDay: dueDayFrom(due),
+        startedOn: startedOnFromInput(due),
       },
     ])
     setName('')
@@ -1724,18 +1728,39 @@ function MustPayments({
           </h3>
           <div className="overflow-hidden rounded-2xl bg-[var(--card)]">
             {upcoming.slice(0, 6).map((u, i) => {
-              const urgent = u.days <= URGENT_DAYS
+              const settled = isSettled(u.payment)
+              const urgent = !settled && u.days <= URGENT_DAYS
               return (
                 <div
                   key={u.payment.id}
                   className="flex items-center gap-3 px-4 py-2.5"
                   style={{ boxShadow: i ? 'inset 0 0.5px 0 var(--separator)' : undefined }}
                 >
+                  {/* Ticking a cycle off drops it to its next date rather than deleting it,
+                      which is what "I have paid this month" actually means. */}
+                  <button
+                    onClick={() =>
+                      setPayments(
+                        payments.map((p) =>
+                          p.id === u.payment.id ? (settled ? unsettle(p) : settle(p)) : p,
+                        ),
+                      )
+                    }
+                    aria-label={settled ? `Mark ${u.payment.name} unpaid` : `Mark ${u.payment.name} paid`}
+                    className="grid size-5 shrink-0 place-items-center rounded-full border-2 transition-colors"
+                    style={
+                      settled
+                        ? { background: '#34C759', borderColor: '#34C759', color: '#fff' }
+                        : { borderColor: 'var(--faint)' }
+                    }
+                  >
+                    {settled && <Check size={11} strokeWidth={3} />}
+                  </button>
                   <span
                     className="w-11 shrink-0 text-[13px] font-semibold tabular-nums"
                     style={{ color: urgent ? '#FF3B30' : 'var(--muted)' }}
                   >
-                    {dueLabel(u.days)}
+                    {settled ? 'Paid' : dueLabel(u.days)}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[16px] tracking-tight">
                     {u.payment.name}
@@ -1834,9 +1859,8 @@ function MustPayments({
             value={due}
             onChange={(e) => setDue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && add()}
-            inputMode="numeric"
-            placeholder="Day"
-            title="Day of the month it renews, 1–31"
+            type="date"
+            title="When the subscription started — it renews on this day each month"
             className={`${FIELD} w-16 shrink-0`}
           />
           <input

@@ -5,8 +5,11 @@ import {
   applyItemDrag,
   glimpse,
   groupPayments,
-  nextDue,
-  daysUntilDue,
+  billingDay,
+  nextDueFor,
+  isSettled,
+  settle,
+  unsettle,
   upcomingPayments,
   dueSoon,
   buildItemRows,
@@ -523,62 +526,109 @@ test('msUntilMidnight counts to the next LOCAL midnight, not UTC', () => {
 
 /* ------------------------------------------------------ renewal dates */
 
-const sub = (id: string, amount: number, dueDay?: number, paused?: boolean) => ({
-  id, name: id, amount, dueDay, paused,
+/** Started on a real date, the way the form now asks for it. */
+const sub = (id: string, amount: number, startedOn?: string, extra: Partial<Payment> = {}): Payment => ({
+  id,
+  name: id,
+  amount,
+  startedOn,
+  ...extra,
 })
 
-test('nextDue treats today as due today, not next month', () => {
-  const now = new Date('2026-09-07T14:00:00')
-  assert.equal(nextDue(7, now).toDateString(), new Date('2026-09-07').toDateString())
-  assert.equal(daysUntilDue(7, now), 0)
-  assert.equal(daysUntilDue(10, now), 3)
-  assert.equal(daysUntilDue(6, now), 29, 'yesterday means next month, not the past')
-})
+const on = (iso: string) => new Date(iso + 'T00:00:00').toISOString()
 
-test('nextDue rolls into the next month and the next year', () => {
-  assert.equal(nextDue(1, new Date('2026-09-15')).toDateString(), new Date('2026-10-01').toDateString())
-  assert.equal(nextDue(3, new Date('2026-12-20')).toDateString(), new Date('2027-01-03').toDateString())
+test('the billing day comes from the date the subscription started', () => {
+  const now = new Date('2026-09-10T14:00:00')
+  // started 3 September, so this month has been and gone -> next is 3 October
+  assert.equal(billingDay(sub('n', 1, on('2026-09-03'))), 3)
+  assert.equal(nextDueFor(sub('n', 1, on('2026-09-03')), now)?.toDateString(), new Date('2026-10-03').toDateString())
+  // started back in January, still bills on the 24th
+  assert.equal(nextDueFor(sub('c', 1, on('2026-01-24')), now)?.toDateString(), new Date('2026-09-24').toDateString())
+  // today counts as due today, not next month
+  assert.equal(nextDueFor(sub('t', 1, on('2026-05-10')), now)?.toDateString(), new Date('2026-09-10').toDateString())
+  assert.equal(nextDueFor(sub('none', 1), now), null, 'no start date, no schedule')
 })
 
 test('a 31st subscription bills on the last day of a short month', () => {
-  // February 2027 has 28 days
-  assert.equal(nextDue(31, new Date('2027-02-10')).toDateString(), new Date('2027-02-28').toDateString())
-  // April has 30
-  assert.equal(nextDue(31, new Date('2027-04-05')).toDateString(), new Date('2027-04-30').toDateString())
-  // and a leap February has 29
-  assert.equal(nextDue(31, new Date('2028-02-10')).toDateString(), new Date('2028-02-29').toDateString())
+  assert.equal(
+    nextDueFor(sub('x', 1, on('2026-01-31')), new Date('2027-02-10'))?.toDateString(),
+    new Date('2027-02-28').toDateString(),
+  )
+  assert.equal(
+    nextDueFor(sub('x', 1, on('2026-01-31')), new Date('2028-02-10'))?.toDateString(),
+    new Date('2028-02-29').toDateString(),
+    'and 29 in a leap year',
+  )
+})
+
+test('ticking a cycle off moves it to next month rather than clearing it', () => {
+  const now = new Date('2026-09-10T09:00:00')
+  const netflix = sub('netflix', 650, on('2026-09-03')) // next due 3 October
+  assert.equal(isSettled(netflix, now), false)
+
+  const paid = settle(netflix, now)
+  assert.equal(isSettled(paid, now), true)
+  assert.equal(
+    nextDueFor(paid, now)?.toDateString(),
+    new Date('2026-11-03').toDateString(),
+    'October is settled, so November is what is owed',
+  )
+
+  // idempotent, and undoable
+  assert.equal(isSettled(settle(paid, now), now), true)
+  assert.equal(isSettled(unsettle(paid), now), false)
+})
+
+test('a settled cycle drops out of what is due soon', () => {
+  const now = new Date('2026-09-10T09:00:00')
+  const due = sub('claude', 2200, on('2026-08-12')) // 12 September, two days away
+  assert.equal(dueSoon([due], now, 3).rows.length, 1)
+  assert.equal(dueSoon([settle(due, now)], now, 3).rows.length, 0, 'paid, so nothing to keep in the account')
 })
 
 test('upcomingPayments orders by what hits the account first, and skips undated and paused', () => {
-  const now = new Date('2026-09-07T09:00:00')
+  const now = new Date('2026-09-10T09:00:00')
   const rows = upcomingPayments(
-    [sub('later', 100, 20), sub('today', 200, 7), sub('soon', 50, 9),
-     sub('undated', 999), sub('paused', 999, 8, true)],
+    [
+      sub('later', 100, on('2026-01-20')),
+      sub('today', 200, on('2026-01-10')),
+      sub('soon', 50, on('2026-01-12')),
+      sub('undated', 999),
+      sub('paused', 999, on('2026-01-11'), { paused: true }),
+    ],
     now,
   )
   assert.deepEqual(rows.map((r) => r.payment.id), ['today', 'soon', 'later'])
-  assert.deepEqual(rows.map((r) => r.days), [0, 2, 13])
+  assert.deepEqual(rows.map((r) => r.days), [0, 2, 10])
 })
 
 test('dueSoon totals only what lands inside the window', () => {
-  const now = new Date('2026-09-07T09:00:00')
-  const list = [sub('a', 500, 7), sub('b', 300, 9), sub('c', 900, 25)]
+  const now = new Date('2026-09-10T09:00:00')
+  const list = [
+    sub('a', 500, on('2026-01-10')), // today
+    sub('b', 300, on('2026-01-12')), // in 2
+    sub('c', 900, on('2026-01-25')), // in 15
+  ]
   const { rows, total } = dueSoon(list, now, 3)
   assert.deepEqual(rows.map((r) => r.payment.id), ['a', 'b'])
-  assert.equal(total, 800, 'the one 18 days out is not money you need this week')
+  assert.equal(total, 800)
   assert.equal(dueSoon(list, now, 0).total, 500, 'a zero-day window is just today')
-  assert.equal(dueSoon([sub('undated', 400)], now, 3).rows.length, 0)
 })
 
-test('parsePayments keeps a valid dueDay and drops an impossible one', () => {
-  const out = parsePayments([
-    { name: 'ok', amount: 1, dueDay: 15 },
-    { name: 'zero', amount: 1, dueDay: 0 },
-    { name: 'too big', amount: 1, dueDay: 32 },
-    { name: 'text', amount: 1, dueDay: '15' },
-    { name: 'none', amount: 1 },
-  ])
-  assert.deepEqual(out.map((p) => p.dueDay), [15, undefined, undefined, undefined, undefined])
+test('an old dueDay becomes a real start date with the same billing day', () => {
+  const now = new Date('2026-09-10T12:00:00')
+  // the shape actually in the data repo before this change
+  const [claude] = parsePayments([{ name: 'Claude', amount: 2200, group: 'Work', dueDay: 24 }])
+  assert.equal(billingDay(claude), 24, 'same day, nothing to re-enter')
+  assert.equal(
+    nextDueFor(claude, now)?.toDateString(),
+    new Date('2026-09-24').toDateString(),
+  )
+  // junk and missing both mean "no schedule", never a wrong one
+  assert.equal(parsePayments([{ name: 'x', amount: 1, dueDay: 0 }])[0].startedOn, undefined)
+  assert.equal(parsePayments([{ name: 'x', amount: 1, dueDay: 32 }])[0].startedOn, undefined)
+  assert.equal(parsePayments([{ name: 'x', amount: 1, startedOn: 'nonsense' }])[0].startedOn, undefined)
+  assert.equal(parsePayments([{ name: 'x', amount: 1 }])[0].startedOn, undefined)
 })
 
 /* ------------------------------------------------------- daily task bands */

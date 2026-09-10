@@ -111,11 +111,19 @@ export type Payment = {
   /** Kept but not counted — for something cancelled or on hold. */
   paused?: boolean
   /**
-   * Day of the month it renews, 1–31. Day-of-month rather than a full date because these
-   * repeat monthly forever; a stored date would be stale after the first cycle. A month
-   * too short for the day bills on its last day, which is what card issuers do.
+   * The date the subscription started, as a calendar date. Asked for instead of a bare
+   * day number because "what day of the month does this bill?" is a question you have to
+   * work out, while "when did you start it?" is one you can just answer off the receipt.
+   * The billing day is the day-of-month of this date; the year and month are only kept so
+   * the answer stays checkable later.
    */
-  dueDay?: number
+  startedOn?: string
+  /**
+   * The due date most recently ticked off. A cycle that has been paid drops out of what
+   * is coming up and returns on the next one, rather than sitting there looking unpaid
+   * until the date passes.
+   */
+  paidThrough?: string
 }
 
 /** A renewal this close counts as urgent: enough warning to move money, not enough to ignore. */
@@ -233,6 +241,24 @@ export function parseTodos(raw: unknown): Todo[] {
   })
 }
 
+/**
+ * The start date out of a stored row. A file written before start dates existed carries a
+ * bare `dueDay`, so that becomes the most recent occurrence of that day — the same billing
+ * day, expressed as a real date, with nothing for the user to re-enter.
+ */
+function startedOnFrom(o: Record<string, unknown>, now: Date = new Date()): string | undefined {
+  if (typeof o.startedOn === 'string') {
+    const d = new Date(o.startedOn)
+    if (isFinite(d.getTime())) return o.startedOn
+  }
+  const legacy = o.dueDay
+  if (typeof legacy !== 'number' || !isFinite(legacy) || legacy < 1 || legacy > 31) return undefined
+  const day = Math.round(legacy)
+  const thisMonth = new Date(now.getFullYear(), now.getMonth(), day)
+  const back = thisMonth <= now ? thisMonth : new Date(now.getFullYear(), now.getMonth() - 1, day)
+  return back.toISOString()
+}
+
 export function parsePayments(raw: unknown): Payment[] {
   if (!Array.isArray(raw)) return []
   return raw.flatMap((r): Payment[] => {
@@ -248,11 +274,8 @@ export function parsePayments(raw: unknown): Payment[] {
         amount: amount < 0 ? 0 : amount,
         group: cleanTag(o.group),
         paused: o.paused === true ? true : undefined,
-        // 1–31 only. Anything else means "no date", never a silently wrong one.
-        dueDay:
-          typeof o.dueDay === 'number' && isFinite(o.dueDay) && o.dueDay >= 1 && o.dueDay <= 31
-            ? Math.round(o.dueDay)
-            : undefined,
+        startedOn: startedOnFrom(o),
+        paidThrough: typeof o.paidThrough === 'string' ? o.paidThrough : undefined,
       },
     ]
   })
@@ -281,6 +304,45 @@ export function nextDue(dueDay: number, now: Date = new Date()): Date {
 export const daysUntilDue = (dueDay: number, now: Date = new Date()): number =>
   Math.round((nextDue(dueDay, now).getTime() - startOfDay(now).getTime()) / 86400000)
 
+/** The day of the month a subscription bills on, taken from the date it started. */
+export const billingDay = (p: Payment): number | undefined => {
+  if (!p.startedOn) return undefined
+  const d = new Date(p.startedOn)
+  return isFinite(d.getTime()) ? d.getDate() : undefined
+}
+
+/** True when this cycle has already been ticked off and is not owed again until the next. */
+export function isSettled(p: Payment, now: Date = new Date()): boolean {
+  const day = billingDay(p)
+  if (!day || !p.paidThrough) return false
+  const paid = new Date(p.paidThrough)
+  return isFinite(paid.getTime()) && dayStart(paid) >= dayStart(nextDue(day, now))
+}
+
+/**
+ * When this actually leaves the account next. A settled cycle skips to the following
+ * month, so ticking one off clears it until it comes round again rather than for good.
+ */
+export function nextDueFor(p: Payment, now: Date = new Date()): Date | null {
+  const day = billingDay(p)
+  if (!day) return null
+  const due = nextDue(day, now)
+  if (!isSettled(p, now)) return due
+  // The day after this cycle's date is inside the next cycle, so asking from there
+  // gives the following occurrence without any month arithmetic here.
+  return nextDue(day, new Date(due.getFullYear(), due.getMonth(), due.getDate() + 1))
+}
+
+/** Tick this cycle off. Idempotent: settling an already-settled cycle changes nothing. */
+export const settle = (p: Payment, now: Date = new Date()): Payment => {
+  const day = billingDay(p)
+  if (!day) return p
+  return { ...p, paidThrough: nextDue(day, now).toISOString() }
+}
+
+/** Undo a tick, putting the cycle back on the list. */
+export const unsettle = (p: Payment): Payment => ({ ...p, paidThrough: undefined })
+
 export type Upcoming = { payment: Payment; due: Date; days: number }
 
 /**
@@ -290,11 +352,12 @@ export type Upcoming = { payment: Payment; due: Date; days: number }
  */
 export function upcomingPayments(payments: Payment[], now: Date = new Date()): Upcoming[] {
   return payments
-    .flatMap((payment) =>
-      payment.paused || !payment.dueDay
-        ? []
-        : [{ payment, due: nextDue(payment.dueDay, now), days: daysUntilDue(payment.dueDay, now) }],
-    )
+    .flatMap((payment) => {
+      if (payment.paused) return []
+      const due = nextDueFor(payment, now)
+      if (!due) return []
+      return [{ payment, due, days: Math.round((dayStart(due) - dayStart(now)) / 86400000) }]
+    })
     .sort((a, b) => a.days - b.days || b.payment.amount - a.payment.amount)
 }
 
