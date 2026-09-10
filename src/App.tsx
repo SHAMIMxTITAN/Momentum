@@ -36,9 +36,6 @@ import {
   monthlySpend,
   isDone,
   DAILY_GROUPS,
-  buildRows,
-  type Row,
-  applyDrag,
   useDayTick,
   DAILY_COLORS,
   DEFAULT_DAILY_COLOR,
@@ -532,8 +529,7 @@ function BuyView({
                       onToggle={() => toggleBought(r.item)}
                       onDelete={() => remove(r.item)}
                     />
-                  ),
-                )}
+                ))}
               </AnimatePresence>
             </SortableContext>
           </DndContext>
@@ -1008,24 +1004,14 @@ function dayLabel(day: string): string {
 
 
 /**
- * Today is three bands: the prayers, the habits, and whatever is only for today. Namaz is
- * first because it is the fixed one — the rest of the day arranges itself around it.
+ * Today is three bands behind a switcher rather than stacked, because stacked they read as
+ * one long list of obligations — the complaint was opening the app and feeling behind.
+ * Daily leads: the habits are what need nudging, the prayers have their own fixed times.
  */
-const TODAY_SECTIONS = [...DAILY_GROUPS, 'Tasks'] as const
+const BANDS = ['Daily', 'Namaz', 'Tasks'] as const
+type Band = (typeof BANDS)[number]
 
-const SECTION_COLOR: Record<string, string> = {
-  Namaz: '#5E5CE6',
-  Daily: '#FF9500',
-  Tasks: '#8E8E93',
-}
-
-const sectionOf = (t: Todo): string => (t.daily ? (t.group ?? 'Daily') : 'Tasks')
-
-/** Dropping into Tasks demotes a standing task to a one-off; the reverse promotes it. */
-const withSection = (t: Todo, section: string): Todo =>
-  section === 'Tasks'
-    ? { ...t, daily: undefined, group: undefined, color: undefined }
-    : { ...t, daily: true, group: section as DailyGroup, when: 'Today' }
+const bandOf = (t: Todo): Band => (t.daily ? (t.group ?? 'Daily') : 'Tasks')
 
 function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) => void }) {
   const [title, setTitle] = useState('')
@@ -1033,6 +1019,7 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const [editing, setEditing] = useState<string | null>(null)
   const [showDone, setShowDone] = useState(false)
   const [asDaily, setAsDaily] = useState(false)
+  const [band, setBand] = useState<Band>('Daily')
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -1041,7 +1028,10 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
 
   const openOn = (w: When) => todos.filter((t) => !isDone(t) && t.when === w)
   // A ticked daily stays on the list and just turns green; only one-offs leave for the log.
-  const shown = todos.filter((t) => t.when === day && (t.daily || !isDone(t)))
+  const inDay = todos.filter((t) => t.when === day && (t.daily || !isDone(t)))
+  // Only Today is banded — the other days hold no standing tasks to separate.
+  const shown = day === 'Today' ? inDay.filter((t) => bandOf(t) === band) : inDay
+  const bandCount = (b: Band) => inDay.filter((t) => bandOf(t) === b && !isDone(t)).length
   const doneDays = doneByDay(todos)
 
   // Peek at the next bucket along, so tomorrow can warn you without taking the screen.
@@ -1085,25 +1075,15 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
 
   const remove = (t: Todo) => setTodos(todos.filter((x) => x.id !== t.id))
 
-  // Today reuses the Buy tab machinery: headers and empty-section ghosts are sortable
-  // members, so dragging across a boundary reassigns the band — and dragging out of one
-  // into Tasks turns a standing task back into a one-off.
-  const rows = useMemo(() => buildRows(shown, TODAY_SECTIONS, sectionOf), [shown])
-
+  // One band on screen means no boundary to drag across, so this is a plain reorder and
+  // the band is changed from the row editor instead.
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over) return
-    if (day !== 'Today') {
-      const ids = shown.map((x) => x.id)
-      const from = ids.indexOf(String(active.id))
-      const to = ids.indexOf(String(over.id))
-      if (from < 0 || to < 0 || from === to) return
-      return setTodos(reorderVisible(todos, shown, from, to))
-    }
-    const ids = rows.map(rowId)
+    const ids = shown.map((x) => x.id)
     const from = ids.indexOf(String(active.id))
     const to = ids.indexOf(String(over.id))
     if (from < 0 || to < 0 || from === to) return
-    setTodos(applyDrag(todos, rows, from, to, TODAY_SECTIONS, withSection))
+    setTodos(reorderVisible(todos, shown, from, to))
   }
 
   return (
@@ -1160,15 +1140,49 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
         </button>
       </div>
 
+      {day === 'Today' && (
+        <div className="mt-3 flex gap-1 rounded-full bg-[var(--card)] p-1">
+          {BANDS.map((b) => {
+            const n = bandCount(b)
+            return (
+              <button
+                key={b}
+                onClick={() => setBand(b)}
+                className="flex-1 rounded-full py-1.5 text-[14px] font-semibold tracking-tight transition-colors"
+                style={
+                  band === b
+                    ? { background: 'var(--card-2)', color: 'var(--text)' }
+                    : { color: 'var(--muted)' }
+                }
+              >
+                {b}
+                {/* The count is what lets one band on screen still tell you about the
+                    others, so switching is a choice rather than a check. */}
+                {n > 0 && (
+                  <span className="ml-1.5 text-[13px] tabular-nums opacity-60">{n}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {shown.length === 0 ? (
         <p className="px-1 pt-6 text-[17px] text-[var(--muted)]">
-          {day === 'Today' ? 'Nothing for today. Enjoy it.' : `Nothing for ${day.toLowerCase()}.`}
+          {day !== 'Today'
+            ? `Nothing for ${day.toLowerCase()}.`
+            : band === 'Tasks'
+              ? 'Nothing extra today. Enjoy it.'
+              : band === 'Namaz'
+                ? 'No prayers listed.'
+                : 'No habits yet. Add one with the repeat button.'}
         </p>
       ) : (
-        // keyed by day so switching days swaps the list outright. Without it every row of the
-        // old day plays its exit animation at once, which reads as noise for what is really
-        // just a view change — removals within a day still animate normally.
-        <div className="pt-4" key={day}>
+        // Keyed by day *and* band so switching either swaps the list outright. Without it
+        // every row of the old view plays its exit animation at once, which reads as noise
+        // for what is really just a view change — removals within a view still animate
+        // normally.
+        <div className="pt-4" key={`${day}:${band}`}>
           <DndContext
             autoScroll={AUTO_SCROLL_Y}
             sensors={sensors}
@@ -1176,56 +1190,35 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
             modifiers={[restrictToVerticalAxis]}
             onDragEnd={onDragEnd}
           >
-            <SortableContext
-              items={(day === 'Today' ? rows.map(rowId) : shown.map((x) => x.id))}
-              strategy={verticalListSortingStrategy}
-            >
+            <SortableContext items={shown.map((x) => x.id)} strategy={verticalListSortingStrategy}>
               <AnimatePresence initial={false}>
-                {(day === 'Today'
-                  ? rows
-                  : shown.map((item) => ({ kind: 'item', item }) as Row<Todo>)
-                ).map((r) =>
-                  r.kind === 'header' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable={false}>
-                      <h2 className="flex items-center gap-2 px-1 pt-6 pb-2 text-[13px] font-semibold tracking-[0.06em] text-[var(--muted)] uppercase">
-                        <span
-                          className="size-1.5 shrink-0 rounded-full"
-                          style={{ background: SECTION_COLOR[r.section] }}
-                        />
-                        {r.section}
-                      </h2>
-                    </Slot>
-                  ) : r.kind === 'ghost' ? (
-                    <Slot key={rowId(r)} id={rowId(r)} droppable>
-                      <p className="px-1 py-2 text-[13px] text-[var(--ghost)]">Nothing here</p>
-                    </Slot>
-                  ) : (
+                {shown.map((r) => (
                   <TodoRow
-                    key={r.item.id}
-                    todo={r.item}
-                    editing={editing === r.item.id}
+                    key={r.id}
+                    todo={r}
+                    editing={editing === r.id}
                     setEditing={setEditing}
                     rename={(id, next) => patch(id, { title: next })}
-                    onToggle={() => toggle(r.item)}
+                    onToggle={() => toggle(r)}
                     onStar={() =>
-                      patch(r.item.id, { important: r.item.important ? undefined : true })
+                      patch(r.id, { important: r.important ? undefined : true })
                     }
-                    onMove={() => moveOn(r.item)}
-                    nextDay={WHENS[(WHENS.indexOf(r.item.when) + 1) % WHENS.length]}
+                    onMove={() => moveOn(r)}
+                    nextDay={WHENS[(WHENS.indexOf(r.when) + 1) % WHENS.length]}
                     onDaily={() =>
-                      patch(r.item.id, {
-                        daily: r.item.daily ? undefined : true,
+                      patch(r.id, {
+                        daily: r.daily ? undefined : true,
                         when: 'Today',
                         // Dropping daily drops the colour and the band with it.
-                        color: r.item.daily ? undefined : r.item.color,
-                        group: r.item.daily ? undefined : 'Daily',
+                        color: r.daily ? undefined : r.color,
+                        group: r.daily ? undefined : 'Daily',
                       })
                     }
-                    onColor={(c) => patch(r.item.id, { color: c })}
-                    onDelete={() => remove(r.item)}
+                    onColor={(c) => patch(r.id, { color: c })}
+                    onBand={(g) => patch(r.id, { group: g })}
+                    onDelete={() => remove(r)}
                   />
-                  ),
-                )}
+                ))}
               </AnimatePresence>
             </SortableContext>
           </DndContext>
@@ -1319,6 +1312,7 @@ function TodoRow({
   nextDay,
   onDaily,
   onColor,
+  onBand,
   onDelete,
 }: {
   todo: Todo
@@ -1331,6 +1325,7 @@ function TodoRow({
   nextDay: When
   onDaily: () => void
   onColor: (c: string) => void
+  onBand: (g: DailyGroup) => void
   onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
@@ -1491,7 +1486,28 @@ function TodoRow({
         {/* Second line, so six swatches never squeeze the title. Only for a daily: a
             one-off has no accent, which is the point — grey means "just today". */}
         {editing && todo.daily && (
-          <div className="flex items-center gap-2.5 pt-3 pl-9">
+          <div className="flex flex-wrap items-center gap-2.5 pt-3 pl-9">
+            {/* One band on screen means no boundary to drag across, so this is the way a
+                standing task moves between Namaz and Daily. */}
+            {DAILY_GROUPS.map((g) => (
+              <button
+                key={g}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  onBand(g)
+                }}
+                aria-pressed={(todo.group ?? 'Daily') === g}
+                className="rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold"
+                style={
+                  (todo.group ?? 'Daily') === g
+                    ? { background: 'var(--card-2)', color: 'var(--text)' }
+                    : { color: 'var(--faint)' }
+                }
+              >
+                {g}
+              </button>
+            ))}
+            <span className="h-4 w-px" style={{ background: 'var(--separator)' }} />
             {DAILY_COLORS.map((c) => {
               const on = (todo.color ?? DEFAULT_DAILY_COLOR) === c
               return (
