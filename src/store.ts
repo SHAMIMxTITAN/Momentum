@@ -496,13 +496,54 @@ export function useDayTick(): string {
   return day
 }
 
+/** How long a task may sit in This week before it counts as ignored rather than planned. */
+export const WEEK_MS = 7 * 86400000
+
 /**
- * A one-off still open in Today that arrived on an earlier day — it rolled over rather than
- * being done. Dailies are exempt: coming back every morning is the point, not a failure.
+ * A task that has outstayed its bucket. Dailies are exempt: coming back every morning is
+ * the point, not a failure.
+ *
+ * Today means "arrived on an earlier day and still is not done". This week is a window
+ * rather than a day, so it only counts once the whole week has gone by — which is what was
+ * missing when two tasks sat there for a fortnight without a word. Tomorrow is never
+ * overdue; it rolls into Today instead.
  */
 export function isOverdue(t: Todo, now: Date = new Date()): boolean {
-  if (t.daily || t.done || t.when !== 'Today' || !t.since) return false
-  return dayStart(new Date(t.since)) < dayStart(now)
+  if (t.daily || t.done || !t.since) return false
+  const age = dayStart(now) - dayStart(new Date(t.since))
+  if (t.when === 'Today') return age > 0
+  if (t.when === 'This week') return age >= WEEK_MS
+  return false
+}
+
+/**
+ * Tomorrow becomes Today once tomorrow has actually arrived.
+ *
+ * `when` is a relative label with no date inside it, so `since` — the day the task landed
+ * in its bucket — is the only thing that can say whether the day it was written for has
+ * been and gone. A task written for tomorrow *today* has today's stamp and stays put.
+ *
+ * Only Tomorrow rolls: This week is a window, not a day, and dailies already live in Today.
+ * A row with no stamp at all (written before `since` existed) gets one instead of moving,
+ * so it rolls a day later rather than jumping the moment it is first read.
+ *
+ * Returns the original array when nothing moved, so the caller can save unconditionally
+ * without writing on every render.
+ */
+export function rollOver(todos: Todo[], now: Date = new Date()): Todo[] {
+  const today = dayStart(now)
+  let changed = false
+  const next = todos.map((t) => {
+    if (t.when !== 'Tomorrow' || t.done) return t
+    if (!t.since) {
+      changed = true
+      return { ...t, since: now.toISOString() }
+    }
+    if (dayStart(new Date(t.since)) >= today) return t
+    changed = true
+    return { ...t, when: 'Today' as When, since: now.toISOString() }
+  })
+  return changed ? next : todos
 }
 
 /**
@@ -525,8 +566,13 @@ export function doneByDay(todos: Todo[]): { day: string; todos: Todo[] }[] {
     .map(([day, todos]) => ({ day, todos }))
 }
 
+/**
+ * The peek deliberately ignores Namaz. It is a reminder of what might be forgotten, and
+ * the prayers have their own fixed times — listing them there is noise that pushes the
+ * one thing you actually might forget out of the slot.
+ */
 export function glimpse(todos: Todo[], when: When): { top: Todo | null; more: number } {
-  const open = todos.filter((t) => !isDone(t) && t.when === when)
+  const open = todos.filter((t) => !isDone(t) && t.when === when && t.group !== 'Namaz')
   if (!open.length) return { top: null, more: 0 }
   // Ties fall back to list position, which is the user's own ordering.
   const top = open.reduce((best, t) => (importance(t) > importance(best) ? t : best), open[0])

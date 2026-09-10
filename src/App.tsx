@@ -29,6 +29,7 @@ import {
   fillRatio,
   glimpse,
   isOverdue,
+  rollOver,
   groupPayments,
   upcomingPayments,
   dueSoon,
@@ -1020,6 +1021,14 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const [showDone, setShowDone] = useState(false)
   const [asDaily, setAsDaily] = useState(false)
   const [band, setBand] = useState<Band>('Daily')
+  // Tomorrow becomes Today at midnight. useDayTick in App re-renders on the day change, so
+  // this effect fires then as well as on mount; rollOver returns the same array when
+  // nothing moved, so the guard keeps it from writing on every render.
+  const today = new Date().toDateString()
+  useEffect(() => {
+    const rolled = rollOver(todos)
+    if (rolled !== todos) setTodos(rolled)
+  }, [today, todos])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -1034,8 +1043,9 @@ function TodoView({ todos, setTodos }: { todos: Todo[]; setTodos: (t: Todo[]) =>
   const bandCount = (b: Band) => inDay.filter((t) => bandOf(t) === b && !isDone(t)).length
   const doneDays = doneByDay(todos)
 
-  // Peek at the next bucket along, so tomorrow can warn you without taking the screen.
-  const nextDay = WHENS[(WHENS.indexOf(day) + 1) % WHENS.length]
+  // From Today, peek ahead at Tomorrow. From anywhere else, peek back at Today — that is
+  // the day you can still do something about, and it is what the card is for.
+  const nextDay: When = day === 'Today' ? 'Tomorrow' : 'Today'
   const peek = glimpse(todos, nextDay)
 
   const add = () => {

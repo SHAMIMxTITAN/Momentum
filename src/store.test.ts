@@ -14,6 +14,7 @@ import {
   isDone,
   msUntilMidnight,
   isOverdue,
+  rollOver,
   doneByDay,
   cleanTag,
   fillRatio,
@@ -630,4 +631,80 @@ test('a band already chosen by hand is never re-guessed from the title', () => {
 test('a one-off carries no band even if a file claims one', () => {
   const [t] = parseTodos([{ title: 'Call the bank', group: 'Namaz' }])
   assert.equal(t.group, undefined)
+})
+
+/* ------------------------------------------------- rollover and staleness */
+
+const dayAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString()
+
+test('Tomorrow rolls into Today once tomorrow has arrived', () => {
+  const now = new Date('2026-09-10T09:00:00')
+  const yesterday = new Date('2026-09-09T20:00:00').toISOString()
+  const todayStamp = new Date('2026-09-10T08:00:00').toISOString()
+
+  const out = rollOver(
+    [
+      { id: 'a', title: 'PE checking', when: 'Tomorrow', done: false, since: yesterday },
+      { id: 'b', title: 'written today for tomorrow', when: 'Tomorrow', done: false, since: todayStamp },
+      { id: 'c', title: 'a week thing', when: 'This week', done: false, since: yesterday },
+      { id: 'd', title: 'already done', when: 'Tomorrow', done: true, since: yesterday },
+    ],
+    now,
+  )
+  assert.equal(out[0].when, 'Today', 'yesterday\u2019s tomorrow is today')
+  assert.equal(out[1].when, 'Tomorrow', 'written today, still for tomorrow')
+  assert.equal(out[2].when, 'This week', 'a window does not roll')
+  assert.equal(out[3].when, 'Tomorrow', 'a finished task is left alone')
+  assert.notEqual(out[0].since, yesterday, 'it re-anchors, so it is not instantly overdue')
+})
+
+test('rollOver returns the same array when nothing moved', () => {
+  const list: Todo[] = [{ id: 'a', title: 'x', when: 'Today', done: false, since: dayAgo(3) }]
+  assert.equal(rollOver(list, new Date()), list, 'identity, so saving it is not a write loop')
+})
+
+test('a Tomorrow row with no stamp gets one instead of jumping straight to Today', () => {
+  const [t] = rollOver([{ id: 'a', title: 'legacy', when: 'Tomorrow', done: false }], new Date())
+  assert.equal(t.when, 'Tomorrow')
+  assert.ok(t.since, 'stamped now, so it rolls tomorrow rather than the instant it is read')
+})
+
+test('This week only flags once the whole week has gone', () => {
+  const now = new Date('2026-09-10T12:00:00')
+  const week = (days: number): Todo => ({
+    id: String(days), title: 'x', when: 'This week', done: false,
+    since: new Date(now.getTime() - days * 86400000).toISOString(),
+  })
+  assert.equal(isOverdue(week(3), now), false, 'mid-week is still planned, not late')
+  assert.equal(isOverdue(week(6), now), false)
+  assert.equal(isOverdue(week(7), now), true, 'the week is up')
+  assert.equal(isOverdue(week(20), now), true, 'the case that went unflagged for a fortnight')
+})
+
+test('Tomorrow is never overdue, and a daily never is either', () => {
+  const now = new Date('2026-09-10T12:00:00')
+  assert.equal(
+    isOverdue({ id: 'a', title: 'x', when: 'Tomorrow', done: false, since: dayAgo(9) }, now),
+    false,
+    'it rolls instead of being scolded',
+  )
+  assert.equal(
+    isOverdue({ id: 'b', title: 'Fajr', when: 'Today', done: false, daily: true, since: dayAgo(9) }, now),
+    false,
+  )
+})
+
+test('the peek ignores Namaz but still surfaces habits and one-offs', () => {
+  const todos: Todo[] = [
+    { id: 'n1', title: 'Fajr', when: 'Today', done: false, daily: true, group: 'Namaz' },
+    { id: 'n2', title: 'Isha', when: 'Today', done: false, daily: true, group: 'Namaz' },
+    { id: 'd1', title: 'Gym', when: 'Today', done: false, daily: true, group: 'Daily' },
+    { id: 't1', title: 'pay the rent', when: 'Today', done: false },
+  ]
+  const { top, more } = glimpse(todos, 'Today')
+  assert.equal(top?.id, 't1', 'the errand wins on wording')
+  assert.equal(more, 1, 'only Gym is left; the two prayers are not counted')
+
+  // a day of nothing but prayers has nothing worth peeking at
+  assert.deepEqual(glimpse(todos.slice(0, 2), 'Today'), { top: null, more: 0 })
 })
