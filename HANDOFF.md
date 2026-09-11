@@ -8,7 +8,7 @@ session; this file is the context for continuing it.
 ```bash
 npm run dev          # vite, port 5173, binds to LAN
 npm run build        # -> dist/, relative paths, static deploy anywhere
-npm test             # node --test src/store.test.ts  (42 tests, all passing)
+npm test             # node --test src/store.test.ts  (60 tests, all passing)
 npx tsc --noEmit     # typecheck
 ```
 
@@ -171,7 +171,7 @@ because the original layout read as too empty.
 ## State: verified vs not
 
 Verified: 24/24 tests; typecheck clean. **Live GitHub round-trip now works** — push, pull, and
-first-run-on-a-clean-machine were all exercised against `SHAMIMxTITAN/buy-next-data` on
+first-run-on-a-clean-machine were all exercised against the private data repo on
 2026-08-16. In the browser: add with price/kind/tag, all four urgency sections, tag filter chips,
 mark-bought feeding the Spending view, month grouping and tag breakdown, to-do add and sections,
 dark/light computed colours, and no horizontal overflow at 375px.
