@@ -1,7 +1,7 @@
 # Handoff — Momentum
 
-Personal "what to buy next" app. Single user, local-first, no login. Built in a previous
-session; this file is the context for continuing it.
+Personal tracker for what to buy, what to do today, and what leaves the bank each month.
+Single user, local-first, no login. This file is the context for continuing it.
 
 ## Commands
 
@@ -125,6 +125,10 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   `buy-next.payments.v1` (monthly commitments), `buy-next.theme`, `buy-next.sync`
   (token/repo/path), and one base per synced file: `buy-next.synced`, `buy-next.synced.todos`,
   `buy-next.synced.payments` (last-synced `{sha, json}` — the base for three-way compare).
+  **The `buy-next.` prefix is frozen and must stay** — the app was renamed to Momentum, the
+  repo with it, but these keys are where the live data actually sits on each device.
+  Renaming them to `momentum.` reads as tidying and is silent data loss: every phone and
+  laptop would come up empty, then push that emptiness to the sync repo.
 - **Sync.** Three files, not one: the list at `cfg.path`, tasks at `todosPath(cfg.path)`, and
   monthly payments at `paymentsPath(cfg.path)` (`list.json` → `list.todos.json`,
   `list.payments.json`). `useFileSync` is generic over a single file — adding another list means
