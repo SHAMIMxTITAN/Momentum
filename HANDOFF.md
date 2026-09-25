@@ -41,16 +41,32 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   a fixed list.
 - **Home** is the first tab and the one the app always opens on. It exists because the
   owner kept forgetting things while switching tabs: one screen shows everything due now.
-  A dark Today slab with a progress ring, then six boxes — Tasks today, Namaz, Daily, Buy
+  A dark Today slab with a progress ring, then six tiles — Tasks today, Namaz, Daily, Buy
   now, Bills due, Spent this month. Every figure comes from `homeSummary()` in the store, a
   pure read of the three lists (tested), so the view holds no logic and cannot drift. The
   ring counts a one-off ticked today even though it has left the Today list — finishing
-  it is what the ring is for. Each box is a native `<details>` sharing `name="home-tiles"`,
-  which makes them an exclusive accordion with no React state; an open box spans both
-  columns. **Home is blue on black only** (owner, 2026-09-26): `#007AFF` plus the dark
-  slab and theme tokens — no green, no teal, and it must not borrow `KIND_COLOR` or
-  `DAILY_COLORS`, which carry both. The lists keep green as "done". It replaced the old
-  launch logic (Spending if a bill was due, else To-do); a due bill is its own box now.
+  it is what the ring is for. It replaced the old launch logic (Spending if a bill was
+  due, else To-do); a due bill is its own tile now.
+  **Colour.** Blue (`#007AFF`) is the theme — the ring and every action button. Each tile
+  has its own identity colour in `HOME_COLOR` (Tasks orange, Namaz purple, Daily yellow,
+  Buy brown, Bills red, Spent graphite), because six tiles in one blue could not be told
+  apart (owner, 2026-09-26). The set is the most mutually distinct six iOS system colours
+  measured against each other and the blue (closest pair CIE76 ΔE 28 — indigo was dropped
+  for sitting 19 from the blue). Still no green or teal, and Home must not borrow
+  `KIND_COLOR` or `DAILY_COLORS`, which carry both. Urgent hints are full-strength text
+  beside a dot in the tile colour — yellow or orange *text* is unreadable on a light card.
+  **Opening.** Tiles are fixed-size `motion.button`s that never reflow. The first version
+  opened a `<details>` box to both columns and a dense grid backfilled the gap by moving
+  its neighbours, so every tap reshuffled the screen. Now a tap grows the tile into a
+  modal panel sharing its `layoutId` (framer-motion shared layout), portalled to
+  `<body>` so a swipe on the scrim cannot chain into the pager behind it; close (scrim,
+  X, Escape) shrinks it back into the same spot. Focus returns to the tile, and the Open
+  button's tab jump happens, only in `onExitComplete` — the tile is hidden while its panel
+  is up, and jumping mid-shrink sends the panel flying to where the tile used to be. Rows
+  stagger in 35ms apart after 120ms; the start delay lives on the panel only, or it doubles
+  on the nested list. The ring draws in via `@starting-style` on a `--ring-off` custom
+  property (an inline offset would outrank it, as with the wave gauge). Reduced motion (the
+  app's `MotionConfig reducedMotion="user"`) drops the morph and the panel simply appears.
 - **Paging.** The four tabs are one native CSS scroll-snap row (`snap-x snap-mandatory`,
   one full-width `snap-start` section each). The browser does the finger-tracking, the
   throw velocity and the snap, so there is no animation code and no touch maths — an

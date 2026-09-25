@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   DndContext,
   KeyboardSensor,
@@ -339,17 +340,58 @@ function ConflictBar({
 
 /* --------------------------------------------------------------- Home view */
 
-// Blue on black, by the owner's choice (2026-09-26): one accent and no green or teal, so
-// Home reads as a calm summary rather than a second colour-coded list. The lists keep
-// their own colour meanings — green is still "done" there.
+// Blue is the theme: the Today ring and every action button. Each box carries its own
+// identity colour so the six read apart at a glance — the owner could not tell them apart
+// when all six were blue (2026-09-26). The set is the most mutually distinct six of the iOS
+// system colours measured against each other and the theme blue (closest pair, CIE76 ΔE
+// 28); indigo lost its place for sitting 19 from the blue. No green or teal: the lists
+// already spend those on "done" and on a Both pill.
 const BLUE = '#007AFF'
+const HOME_COLOR = {
+  tasks: '#FF9500',
+  namaz: '#AF52DE',
+  daily: '#FFCC00',
+  buy: '#A2845E',
+  bills: '#FF3B30',
+  spent: '#8E8E93',
+} as const
+type BoxId = keyof typeof HOME_COLOR
+
+// Apple's default feel: quick, settled, a whisper of overshoot. The press is stiffer so the
+// dip lands under the finger rather than trailing it.
+const MORPH = { type: 'spring' as const, duration: 0.42, bounce: 0.16 }
+const PRESS = { type: 'spring' as const, stiffness: 700, damping: 32 }
+
+// Panel rows arrive one after another as the panel settles. The start delay lives on the
+// panel alone: a list nested inside it only staggers, or the two delays stack and the first
+// row lands 240ms after the tap instead of 120.
+const ROWS = { hidden: {}, show: { transition: { staggerChildren: 0.035, delayChildren: 0.12 } } }
+const STAGGER = { hidden: {}, show: { transition: { staggerChildren: 0.035 } } }
+const ROW = {
+  hidden: { opacity: 0, y: 6 },
+  show: { opacity: 1, y: 0, transition: { type: 'spring' as const, duration: 0.35, bounce: 0 } },
+}
+
+type BoxSpec = {
+  id: BoxId
+  icon: LucideIcon
+  value: string | number
+  label: string
+  hint: string
+  alert?: boolean
+  tab: Tab
+  body: React.ReactNode
+}
 
 /**
- * Everything due right now, one box per list, so nothing has to be carried in your head
- * from tab to tab. Each box is a native <details> sharing one `name`, which makes the set
- * an exclusive accordion — opening one closes the last — with the disclosure, keyboard
- * and a11y for free and no state to keep. An open box spans both columns so its list has
- * room.
+ * Everything due right now, one tile per list, so nothing has to be carried in your head
+ * from tab to tab.
+ *
+ * Tiles never change size. The first version opened a box to both columns, and the grid
+ * backfilled the gap by moving its neighbours — every tap reshuffled the screen, which is
+ * what read as "it goes into the whole app". Now a tapped tile grows into a panel floating
+ * over Home (a shared `layoutId`, so the panel visibly comes out of the tile) and shrinks
+ * back into the same spot, with nothing behind it moving.
  */
 function HomeView({
   items,
@@ -363,168 +405,284 @@ function HomeView({
   goTo: (t: Tab) => void
 }) {
   const s = homeSummary(items, todos, payments)
-  const { done, total } = s.today
+  const [open, setOpen] = useState<BoxId | null>(null)
+  const tiles = useRef<Partial<Record<BoxId, HTMLButtonElement | null>>>({})
   const now = new Date()
   const bill = s.bills.upcoming[0]
   const month = s.spent
 
+  // What to do once the panel has finished shrinking back. Not before: the tile is hidden
+  // while its panel is up, so focusing it early silently fails, and jumping tabs mid-shrink
+  // would send the panel flying to where the tile used to be as the page slides away.
+  // Focus returns to the tile so a keyboard or screen-reader user lands where they left.
+  const after = useRef<{ focus?: BoxId; tab?: Tab }>({})
+  const close = (tab?: Tab) => {
+    after.current = tab ? { tab } : { focus: open ?? undefined }
+    setOpen(null)
+  }
+  const settled = () => {
+    const { focus, tab } = after.current
+    after.current = {}
+    if (tab) goTo(tab)
+    else if (focus) tiles.current[focus]?.focus({ preventScroll: true })
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const boxes: BoxSpec[] = [
+    {
+      id: 'tasks',
+      icon: ListChecks,
+      value: s.tasks.open.length,
+      label: 'Tasks today',
+      hint: s.tasks.overdue ? `${s.tasks.overdue} overdue` : (s.tasks.open[0]?.title ?? 'All clear'),
+      alert: s.tasks.overdue > 0,
+      tab: 'To-do',
+      body: s.tasks.open.length ? (
+        <List>
+          {s.tasks.open.map((t) => (
+            <Line key={t.id} title={t.title} right={isOverdue(t) ? 'Overdue' : undefined} color={HOME_COLOR.tasks} alert />
+          ))}
+        </List>
+      ) : (
+        <Empty>Nothing left for today.</Empty>
+      ),
+    },
+    {
+      id: 'namaz',
+      icon: Sunrise,
+      value: `${s.namaz.done}/${s.namaz.rows.length}`,
+      label: 'Namaz',
+      hint: bandHint(s.namaz, 'All prayed'),
+      tab: 'To-do',
+      body: <BandList band={s.namaz} color={HOME_COLOR.namaz} empty="No prayers set up yet." />,
+    },
+    {
+      id: 'daily',
+      icon: Repeat,
+      value: `${s.daily.done}/${s.daily.rows.length}`,
+      label: 'Daily',
+      hint: bandHint(s.daily, 'All done'),
+      tab: 'To-do',
+      body: <BandList band={s.daily} color={HOME_COLOR.daily} empty="No daily habits yet." />,
+    },
+    {
+      id: 'buy',
+      icon: ShoppingBag,
+      value: s.buy.now.length,
+      label: 'Buy now',
+      hint: s.buy.now[0]?.title ?? 'Nothing urgent',
+      tab: 'Buy',
+      body:
+        s.buy.now.length || s.buy.soon.length ? (
+          <>
+            <List>
+              {s.buy.now.map((i) => (
+                <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
+              ))}
+            </List>
+            {s.buy.nowTotal > 0 && (
+              <motion.p variants={ROW} className="pt-1 text-right text-[13px] text-[var(--muted)] tabular-nums">
+                {money(s.buy.nowTotal)} for now
+              </motion.p>
+            )}
+            {s.buy.soon.length > 0 && (
+              <>
+                <motion.p
+                  variants={ROW}
+                  className="pt-3 pb-0.5 text-[12px] font-semibold tracking-wide text-[var(--muted)] uppercase"
+                >
+                  Soon
+                </motion.p>
+                <List>
+                  {s.buy.soon.map((i) => (
+                    <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
+                  ))}
+                </List>
+              </>
+            )}
+          </>
+        ) : (
+          <Empty>Nothing to buy right now.</Empty>
+        ),
+    },
+    {
+      id: 'bills',
+      icon: CalendarClock,
+      value: s.bills.urgent,
+      label: 'Bills due',
+      hint: bill ? `${bill.payment.name} · ${dueLabel(bill.days)}` : 'No dated bills',
+      alert: s.bills.urgent > 0,
+      tab: 'Spending',
+      body: s.bills.upcoming.length ? (
+        <List>
+          {s.bills.upcoming.slice(0, 6).map((u) => (
+            <Line
+              key={u.payment.id}
+              title={u.payment.name}
+              right={`${dueLabel(u.days)} · ${money(u.payment.amount)}`}
+              color={HOME_COLOR.bills}
+              alert={u.days <= URGENT_DAYS}
+            />
+          ))}
+        </List>
+      ) : (
+        <Empty>No bills with a date yet.</Empty>
+      ),
+    },
+    {
+      id: 'spent',
+      icon: Wallet,
+      value: money(month?.total ?? 0),
+      label: `Spent in ${now.toLocaleDateString(undefined, { month: 'long' })}`,
+      hint: month ? `${month.count} bought` : 'Nothing yet',
+      tab: 'Spending',
+      body: month ? (
+        <List>
+          {KINDS.map((k) => (
+            <Line key={k} title={k} right={money(month.byKind[k])} />
+          ))}
+        </List>
+      ) : (
+        <Empty>Nothing bought this month.</Empty>
+      ),
+    },
+  ]
+  const box = boxes.find((b) => b.id === open)
+
   return (
     <div className="pt-1">
       <div className="flex items-center gap-5 rounded-3xl bg-[#1D1D1F] px-5 py-5 text-white dark:bg-[#161618]">
-        <Ring done={done} total={total} />
+        <Ring done={s.today.done} total={s.today.total} />
         <div className="min-w-0">
           <p className="text-[13px] text-white/55">
             {now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
           <p className="pt-0.5 text-[21px] font-semibold tracking-tight">
-            {total === 0
+            {s.today.total === 0
               ? 'Nothing planned'
-              : done === total
+              : s.today.done === s.today.total
                 ? 'All done today'
-                : `${done} of ${total} done`}
+                : `${s.today.done} of ${s.today.total} done`}
           </p>
-          {total > done && (
-            <p className="pt-0.5 text-[13px] text-white/55">{total - done} still to do</p>
+          {s.today.total > s.today.done && (
+            <p className="pt-0.5 text-[13px] text-white/55">{s.today.total - s.today.done} still to do</p>
           )}
         </div>
       </div>
 
-      {/* dense: an open box needs both columns, so a right-hand one drops a row; without
-          backfill that leaves a hole beside the box on its left. */}
-      <div className="grid grid-flow-row-dense grid-cols-2 gap-3 pt-3">
-        <Box
-          icon={ListChecks}
-          value={s.tasks.open.length}
-          label="Tasks today"
-          hint={
-            s.tasks.overdue
-              ? `${s.tasks.overdue} overdue`
-              : (s.tasks.open[0]?.title ?? 'All clear')
-          }
-          alert={s.tasks.overdue > 0}
-          tab="To-do"
-          goTo={goTo}
-        >
-          {s.tasks.open.length ? (
-            <List>
-              {s.tasks.open.map((t) => (
-                <Line
-                  key={t.id}
-                  title={t.title}
-                  right={isOverdue(t) ? 'Overdue' : undefined}
-                  alert
-                />
-              ))}
-            </List>
-          ) : (
-            <Empty>Nothing left for today.</Empty>
-          )}
-        </Box>
-
-        <Box
-          icon={Sunrise}
-          value={`${s.namaz.done}/${s.namaz.rows.length}`}
-          label="Namaz"
-          hint={bandHint(s.namaz, 'All prayed')}
-          tab="To-do"
-          goTo={goTo}
-        >
-          <BandList band={s.namaz} empty="No prayers set up yet." />
-        </Box>
-
-        <Box
-          icon={Repeat}
-          value={`${s.daily.done}/${s.daily.rows.length}`}
-          label="Daily"
-          hint={bandHint(s.daily, 'All done')}
-          tab="To-do"
-          goTo={goTo}
-        >
-          <BandList band={s.daily} empty="No daily habits yet." />
-        </Box>
-
-        <Box
-          icon={ShoppingBag}
-          value={s.buy.now.length}
-          label="Buy now"
-          hint={s.buy.now[0]?.title ?? 'Nothing urgent'}
-          tab="Buy"
-          goTo={goTo}
-        >
-          {s.buy.now.length || s.buy.soon.length ? (
-            <>
-              <List>
-                {s.buy.now.map((i) => (
-                  <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
-                ))}
-              </List>
-              {s.buy.nowTotal > 0 && (
-                <p className="pt-1 text-right text-[13px] text-[var(--muted)] tabular-nums">
-                  {money(s.buy.nowTotal)} for now
-                </p>
-              )}
-              {s.buy.soon.length > 0 && (
-                <>
-                  <p className="pt-3 pb-0.5 text-[12px] font-semibold tracking-wide text-[var(--muted)] uppercase">
-                    Soon
-                  </p>
-                  <List>
-                    {s.buy.soon.map((i) => (
-                      <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
-                    ))}
-                  </List>
-                </>
-              )}
-            </>
-          ) : (
-            <Empty>Nothing to buy right now.</Empty>
-          )}
-        </Box>
-
-        <Box
-          icon={CalendarClock}
-          value={s.bills.urgent}
-          label="Bills due"
-          hint={bill ? `${bill.payment.name} · ${dueLabel(bill.days)}` : 'No dated bills'}
-          alert={s.bills.urgent > 0}
-          tab="Spending"
-          goTo={goTo}
-        >
-          {s.bills.upcoming.length ? (
-            <List>
-              {s.bills.upcoming.slice(0, 6).map((u) => (
-                <Line
-                  key={u.payment.id}
-                  title={u.payment.name}
-                  right={`${dueLabel(u.days)} · ${money(u.payment.amount)}`}
-                  alert={u.days <= URGENT_DAYS}
-                />
-              ))}
-            </List>
-          ) : (
-            <Empty>No bills with a date yet.</Empty>
-          )}
-        </Box>
-
-        <Box
-          icon={Wallet}
-          value={money(month?.total ?? 0)}
-          label={`Spent in ${now.toLocaleDateString(undefined, { month: 'long' })}`}
-          hint={month ? `${month.count} bought` : 'Nothing yet'}
-          tab="Spending"
-          goTo={goTo}
-        >
-          {month ? (
-            <List>
-              {KINDS.map((k) => (
-                <Line key={k} title={k} right={money(month.byKind[k])} />
-              ))}
-            </List>
-          ) : (
-            <Empty>Nothing bought this month.</Empty>
-          )}
-        </Box>
+      <div className="grid grid-cols-2 gap-3 pt-3">
+        {boxes.map((b) => (
+          <motion.button
+            key={b.id}
+            ref={(el: HTMLButtonElement | null) => {
+              tiles.current[b.id] = el
+            }}
+            layoutId={`home-tile-${b.id}`}
+            onClick={() => setOpen(b.id)}
+            whileTap={{ scale: 0.96, transition: PRESS }}
+            transition={MORPH}
+            aria-haspopup="dialog"
+            className="flex min-w-0 flex-col gap-3 bg-[var(--card)] p-4 text-left shadow-sm dark:shadow-none"
+            style={{ borderRadius: 24 }}
+          >
+            <Chip icon={b.icon} color={HOME_COLOR[b.id]} />
+            <span className="min-w-0">
+              <span
+                className={`block leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums ${
+                  String(b.value).length > 8 ? 'text-[22px]' : 'text-[26px]'
+                }`}
+              >
+                {b.value}
+              </span>
+              <span className="block truncate pt-1.5 text-[14px] text-[var(--muted)]">{b.label}</span>
+            </span>
+            <Hint text={b.hint} color={HOME_COLOR[b.id]} alert={b.alert} />
+          </motion.button>
+        ))}
       </div>
+
+      {/* Portalled to <body>: inside the pager a swipe on the scrim would chain to the scroll
+          containers behind it and page the tabs while the panel is up. */}
+      {createPortal(
+        <AnimatePresence onExitComplete={settled}>
+          {box && (
+            <div key="home-panel" className="fixed inset-0 z-40 flex items-center justify-center p-3">
+              <motion.div
+                className="absolute inset-0 touch-none bg-black/40"
+                onClick={() => close()}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.22 }}
+              />
+              <motion.div
+                layoutId={`home-tile-${box.id}`}
+                transition={MORPH}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="home-panel-label home-panel-title"
+                className="home-panel relative flex max-h-[78dvh] w-full max-w-md flex-col overflow-hidden bg-[var(--card)]"
+                style={{ borderRadius: 28 }}
+              >
+                <motion.div
+                  className="flex min-h-0 flex-col"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1, transition: { delay: 0.08, duration: 0.18 } }}
+                  exit={{ opacity: 0, transition: { duration: 0.08 } }}
+                >
+                  <div className="flex items-center gap-3 px-5 pt-5 pb-2">
+                    <Chip icon={box.icon} color={HOME_COLOR[box.id]} size={48} />
+                    <div className="min-w-0 flex-1">
+                      <p
+                        id="home-panel-title"
+                        className="text-[28px] leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums"
+                      >
+                        {box.value}
+                      </p>
+                      <p id="home-panel-label" className="truncate pt-1 text-[14px] text-[var(--muted)]">
+                        {box.label}
+                      </p>
+                    </div>
+                    <button
+                      autoFocus
+                      onClick={() => close()}
+                      aria-label="Close"
+                      className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--card-2)] text-[var(--muted)]"
+                    >
+                      <X size={16} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                  <motion.div
+                    variants={ROWS}
+                    initial="hidden"
+                    animate="show"
+                    className="min-h-0 overflow-y-auto overscroll-contain px-5"
+                  >
+                    {box.body}
+                  </motion.div>
+                  <div className="px-5 pt-2 pb-5">
+                    <button
+                      onClick={() => close(box.tab)}
+                      className="flex items-center gap-0.5 text-[15px] font-semibold"
+                      style={{ color: BLUE }}
+                    >
+                      Open {box.tab}
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </div>
   )
 }
@@ -532,114 +690,95 @@ function HomeView({
 const bandHint = (b: HomeBand, allDone: string): string =>
   !b.rows.length ? 'None yet' : b.next ? `Next: ${b.next.title}` : allDone
 
-function Box({
-  icon: Icon,
-  value,
-  label,
-  hint,
-  alert,
-  tab,
-  goTo,
-  children,
-}: {
-  icon: LucideIcon
-  value: string | number
-  label: string
-  hint: string
-  alert?: boolean
-  tab: Tab
-  goTo: (t: Tab) => void
-  children: React.ReactNode
-}) {
+/** A solid round badge in the box's own colour — the thing the eye finds first. */
+function Chip({ icon: Icon, color, size = 40 }: { icon: LucideIcon; color: string; size?: number }) {
   return (
-    <details
-      name="home-tiles"
-      className="group min-w-0 rounded-3xl bg-[var(--card)] shadow-sm open:col-span-2 dark:shadow-none"
+    <span
+      className="grid shrink-0 place-items-center rounded-full text-white"
+      style={{ background: color, width: size, height: size }}
     >
-      {/* Closed, the face stacks icon / figure / hint to fit half the width. Open, it lies
-          flat in a row and the hint gives way to the full list underneath. */}
-      <summary className="flex cursor-pointer list-none flex-col gap-3 p-4 group-open:flex-row group-open:items-center [&::-webkit-details-marker]:hidden">
-        <span
-          className="grid size-10 shrink-0 place-items-center rounded-2xl"
-          style={{ background: `${BLUE}1F`, color: BLUE }}
-        >
-          <Icon size={20} strokeWidth={2.2} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span
-            className={`block leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums ${
-              String(value).length > 8 ? 'text-[22px]' : 'text-[26px]'
-            }`}
-          >
-            {value}
-          </span>
-          <span className="block truncate pt-1.5 text-[14px] text-[var(--muted)]">{label}</span>
-        </span>
-        <span
-          className="truncate text-[13px] group-open:hidden"
-          style={alert ? { color: BLUE, fontWeight: 600 } : { color: 'var(--faint)' }}
-        >
-          {hint}
-        </span>
-      </summary>
-      <div className="home-reveal px-4 pb-4">
-        {children}
-        <button
-          onClick={() => goTo(tab)}
-          className="mt-3 flex items-center gap-0.5 text-[14px] font-semibold"
-          style={{ color: BLUE }}
-        >
-          Open {tab}
-          <ChevronRight size={15} />
-        </button>
-      </div>
-    </details>
+      <Icon size={size * 0.5} strokeWidth={2.4} />
+    </span>
+  )
+}
+
+/**
+ * The line under a tile's figure. Urgent ones get a dot in the box's colour and full-
+ * strength text: yellow or orange *text* on a light card would be too faint to read, so
+ * colour marks it and the text stays legible.
+ */
+function Hint({ text, color, alert }: { text: string; color: string; alert?: boolean }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
+      {alert && <span className="size-1.5 shrink-0 rounded-full" style={{ background: color }} />}
+      <span
+        className="truncate"
+        style={alert ? { color: 'var(--text)', fontWeight: 600 } : { color: 'var(--muted)' }}
+      >
+        {text}
+      </span>
+    </span>
   )
 }
 
 /** Plain ledger rows with the same 0.5px inset hairline the payments list uses. */
 const List = ({ children }: { children: React.ReactNode }) => (
-  <ul className="[&>li+li]:shadow-[inset_0_0.5px_0_var(--separator)]">{children}</ul>
+  <motion.ul variants={STAGGER} className="[&>li+li]:shadow-[inset_0_0.5px_0_var(--separator)]">
+    {children}
+  </motion.ul>
 )
 
-function Line({ title, right, alert }: { title: string; right?: string; alert?: boolean }) {
+function Line({
+  title,
+  right,
+  color,
+  alert,
+}: {
+  title: string
+  right?: string
+  color?: string
+  alert?: boolean
+}) {
+  const loud = alert && right
   return (
-    <li className="flex items-baseline justify-between gap-3 py-2 text-[15px] tracking-tight">
+    <motion.li variants={ROW} className="flex items-center justify-between gap-3 py-2.5 text-[15px] tracking-tight">
       <span className="min-w-0 truncate">{title}</span>
       {right && (
-        <span
-          className="shrink-0 text-[14px] tabular-nums"
-          style={alert ? { color: BLUE, fontWeight: 600 } : { color: 'var(--muted)' }}
-        >
-          {right}
+        <span className="flex shrink-0 items-center gap-1.5 text-[14px] tabular-nums">
+          {loud && color && <span className="size-1.5 rounded-full" style={{ background: color }} />}
+          <span style={loud ? { color: 'var(--text)', fontWeight: 600 } : { color: 'var(--muted)' }}>
+            {right}
+          </span>
         </span>
       )}
-    </li>
+    </motion.li>
   )
 }
 
 const Empty = ({ children }: { children: React.ReactNode }) => (
-  <p className="py-2 text-[15px] text-[var(--muted)]">{children}</p>
+  <motion.p variants={ROW} className="py-2.5 text-[15px] text-[var(--muted)]">
+    {children}
+  </motion.p>
 )
 
-function BandList({ band, empty }: { band: HomeBand; empty: string }) {
+function BandList({ band, color, empty }: { band: HomeBand; color: string; empty: string }) {
   if (!band.rows.length) return <Empty>{empty}</Empty>
   return (
     <List>
       {band.rows.map((t) => {
         const done = isDone(t)
         return (
-          <li key={t.id} className="flex items-center gap-3 py-2 text-[15px] tracking-tight">
+          <motion.li key={t.id} variants={ROW} className="flex items-center gap-3 py-2.5 text-[15px] tracking-tight">
             <span
               className="grid size-5 shrink-0 place-items-center rounded-full border-2"
-              style={done ? { background: BLUE, borderColor: BLUE } : { borderColor: 'var(--faint)' }}
+              style={done ? { background: color, borderColor: color } : { borderColor: 'var(--faint)' }}
             >
               {done && <Check size={11} strokeWidth={3.5} color="#fff" />}
             </span>
             <span className="min-w-0 truncate" style={done ? { color: 'var(--muted)' } : undefined}>
               {t.title}
             </span>
-          </li>
+          </motion.li>
         )
       })}
     </List>
@@ -647,8 +786,11 @@ function BandList({ band, empty }: { band: HomeBand; empty: string }) {
 }
 
 /**
- * Today's progress. A zero-length stroke with a round cap still paints a dot, so an empty
- * day draws the track alone.
+ * Today's progress, in the theme blue. It draws itself in from empty on mount and glides
+ * whenever the count changes — the offset rides a custom property because an inline
+ * stroke-dashoffset would outrank the @starting-style that makes the draw-in work. A
+ * zero-length stroke with a round cap still paints a dot, so an empty day shows the track
+ * alone.
  */
 function Ring({ done, total }: { done: number; total: number }) {
   const r = 26
@@ -668,8 +810,8 @@ function Ring({ done, total }: { done: number; total: number }) {
             strokeWidth="6"
             strokeLinecap="round"
             strokeDasharray={c}
-            strokeDashoffset={c * (1 - p)}
-            className="transition-[stroke-dashoffset] duration-700"
+            className="home-ring"
+            style={{ '--ring-c': c, '--ring-off': c * (1 - p) } as React.CSSProperties}
           />
         )}
       </svg>

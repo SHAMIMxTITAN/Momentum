@@ -111,22 +111,23 @@ input::placeholder {
   }
 }
 
-/* Home boxes: the list settles in as a box opens. A keyframe rather than a transition
-   because <details> content goes from not rendered to rendered, which is exactly when an
-   animation starts on its own - no JS, no state. */
-@keyframes home-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
+/* Home's Today ring draws itself in from empty on mount, then glides whenever the count
+   changes. The offset comes in as --ring-off rather than an inline stroke-dashoffset, because
+   an inline style would outrank @starting-style and kill the draw-in (same trap as the wave
+   gauge above). */
+.home-ring {
+  stroke-dashoffset: var(--ring-off);
+  transition: stroke-dashoffset 900ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@starting-style {
+  .home-ring {
+    stroke-dashoffset: var(--ring-c);
   }
 }
 
-.home-reveal {
-  animation: home-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .home-reveal {
-    animation: none;
+  .home-ring {
+    transition: none;
   }
 }
