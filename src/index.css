@@ -110,3 +110,23 @@ input::placeholder {
     transition: none;
   }
 }
+
+/* Home boxes: the list settles in as a box opens. A keyframe rather than a transition
+   because <details> content goes from not rendered to rendered, which is exactly when an
+   animation starts on its own - no JS, no state. */
+@keyframes home-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.home-reveal {
+  animation: home-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-reveal {
+    animation: none;
+  }
+}

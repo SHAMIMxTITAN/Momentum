@@ -19,6 +19,7 @@ import {
   isOverdue,
   rollOver,
   doneByDay,
+  homeSummary,
   cleanTag,
   fillRatio,
   monthlySpend,
@@ -757,4 +758,93 @@ test('the peek ignores Namaz but still surfaces habits and one-offs', () => {
 
   // a day of nothing but prayers has nothing worth peeking at
   assert.deepEqual(glimpse(todos.slice(0, 2), 'Today'), { top: null, more: 0 })
+})
+
+// Local timestamps throughout: a bare '2026-09-26' parses as UTC and lands on the 25th
+// west of Greenwich, which would test the timezone rather than the summary.
+const HOME_NOW = new Date('2026-09-26T10:00:00')
+const local = (d: string) => new Date(d).toISOString()
+
+const homeTodos: Todo[] = [
+  { id: 'n1', title: 'Fajr', when: 'Today', daily: true, group: 'Namaz', done: true, doneAt: local('2026-09-26T05:00:00') },
+  { id: 'n2', title: 'Dhuhr', when: 'Today', daily: true, group: 'Namaz', done: true, doneAt: local('2026-09-25T13:00:00') },
+  { id: 'n3', title: 'Asr', when: 'Today', daily: true, group: 'Namaz', done: false },
+  { id: 'd1', title: 'English', when: 'Today', daily: true, group: 'Daily', done: true, doneAt: local('2026-09-26T08:00:00') },
+  { id: 'd2', title: 'Gym', when: 'Today', daily: true, group: 'Daily', done: false },
+  { id: 't1', title: 'Pay rent', when: 'Today', done: false, since: local('2026-09-24T09:00:00') },
+  { id: 't2', title: 'Buy milk', when: 'Today', done: false, since: local('2026-09-26T07:00:00') },
+  { id: 't3', title: 'Call mum', when: 'Today', done: true, doneAt: local('2026-09-26T09:00:00') },
+  { id: 't4', title: 'Old thing', when: 'Today', done: true, doneAt: local('2026-09-25T09:00:00') },
+  { id: 't5', title: 'Plan trip', when: 'Tomorrow', done: false, since: local('2026-09-26T07:00:00') },
+]
+
+const homeItems: Item[] = [
+  { id: 'i1', title: 'Lamp', kind: 'Need', urgency: 'Now', price: 2000, bought: false },
+  { id: 'i2', title: 'Cable', kind: 'Need', urgency: 'Now', bought: false },
+  { id: 'i3', title: 'Desk', kind: 'Want', urgency: 'Soon', price: 9000, bought: false },
+  { id: 'i4', title: 'Keyboard', kind: 'Want', urgency: 'Now', price: 5000, bought: true, boughtAt: local('2026-09-10T12:00:00') },
+  { id: 'i5', title: 'Mouse', kind: 'Need', urgency: 'Later', price: 1000, bought: true, boughtAt: local('2026-08-15T12:00:00') },
+]
+
+const homePayments: Payment[] = [
+  { id: 'p1', name: 'Netflix', amount: 649, startedOn: '2026-01-28T12:00:00' },
+  { id: 'p2', name: 'Rent', amount: 20000, startedOn: '2025-03-05T12:00:00' },
+  { id: 'p3', name: 'Gym', amount: 999, startedOn: '2026-01-27T12:00:00', paused: true },
+  { id: 'p4', name: 'Spotify', amount: 119, startedOn: '2026-02-26T12:00:00' },
+]
+
+test('homeSummary splits standing tasks into bands and finds the next open one', () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  // Dhuhr was ticked yesterday, so it is open again and is next — not Asr.
+  assert.deepEqual(s.namaz.rows.map((t) => t.id), ['n1', 'n2', 'n3'])
+  assert.equal(s.namaz.done, 1)
+  assert.equal(s.namaz.next?.title, 'Dhuhr')
+  assert.deepEqual(s.daily.rows.map((t) => t.id), ['d1', 'd2'])
+  assert.equal(s.daily.done, 1)
+  assert.equal(s.daily.next?.title, 'Gym')
+})
+
+test("homeSummary lists today's open one-offs in order and counts the overdue", () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  assert.deepEqual(s.tasks.open.map((t) => t.title), ['Pay rent', 'Buy milk'])
+  assert.equal(s.tasks.overdue, 1) // Pay rent has sat there since the 24th
+})
+
+test('homeSummary rings in a one-off ticked today, not one ticked yesterday', () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  // done: Fajr + English + Call mum. total: 3 prayers + 2 habits + 2 open + Call mum.
+  assert.deepEqual(s.today, { done: 3, total: 8 })
+})
+
+test('homeSummary takes unbought Now and Soon, and totals only priced Now items', () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  // The bought Keyboard was Now; it must not come back as something to buy.
+  assert.deepEqual(s.buy.now.map((i) => i.title), ['Lamp', 'Cable'])
+  assert.deepEqual(s.buy.soon.map((i) => i.title), ['Desk'])
+  assert.equal(s.buy.nowTotal, 2000)
+})
+
+test('homeSummary orders bills by when they hit and counts the urgent ones', () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  assert.deepEqual(
+    s.bills.upcoming.map((u) => [u.payment.name, u.days]),
+    [['Spotify', 0], ['Netflix', 2], ['Rent', 9]],
+  )
+  assert.equal(s.bills.urgent, 2)
+  assert.equal(s.bills.urgentTotal, 768)
+})
+
+test("homeSummary reads this month's spending and ignores last month's", () => {
+  const s = homeSummary(homeItems, homeTodos, homePayments, HOME_NOW)
+  assert.equal(s.spent?.key, '2026-09')
+  assert.equal(s.spent?.total, 5000)
+})
+
+test('homeSummary on empty lists is all zeros, not a crash', () => {
+  const s = homeSummary([], [], [], HOME_NOW)
+  assert.deepEqual(s.today, { done: 0, total: 0 })
+  assert.equal(s.namaz.next, null)
+  assert.equal(s.tasks.open.length, 0)
+  assert.equal(s.bills.urgent, 0)
+  assert.equal(s.spent, undefined)
 })

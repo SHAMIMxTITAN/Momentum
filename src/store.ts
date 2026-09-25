@@ -708,6 +708,77 @@ export function monthlySpend(items: Item[]): MonthSpend[] {
   })
 }
 
+/** A band of standing tasks as Home shows it: the rows in list order, and the first still open. */
+export type HomeBand = { rows: Todo[]; done: number; next: Todo | null }
+
+export type HomeSummary = {
+  /** Everything that belongs to today, done or not — the ring on the Today card. */
+  today: { done: number; total: number }
+  /** Today's one-offs still open, in the user's own order. */
+  tasks: { open: Todo[]; overdue: number }
+  namaz: HomeBand
+  daily: HomeBand
+  buy: { now: Item[]; soon: Item[]; nowTotal: number }
+  bills: { upcoming: Upcoming[]; urgent: number; urgentTotal: number }
+  /** This calendar month's spending, or undefined if nothing was bought yet. */
+  spent: MonthSpend | undefined
+}
+
+/**
+ * Every figure the Home boxes show, read off the three lists in one place so the screen
+ * is a dumb view and the numbers are testable. Nothing is stored — this is what the lists
+ * say at `now`, so it cannot drift from them.
+ *
+ * The ring counts a one-off ticked today even though it has left the Today list for the
+ * done log: finishing it is exactly what the ring is for, and dropping it from the total
+ * would make a productive day read as a smaller one.
+ */
+export function homeSummary(
+  items: Item[],
+  todos: Todo[],
+  payments: Payment[],
+  now: Date = new Date(),
+): HomeSummary {
+  const band = (rows: Todo[]): HomeBand => ({
+    rows,
+    done: rows.filter((t) => isDone(t, now)).length,
+    next: rows.find((t) => !isDone(t, now)) ?? null,
+  })
+  const namaz = band(todos.filter((t) => t.daily && t.group === 'Namaz'))
+  const daily = band(todos.filter((t) => t.daily && t.group !== 'Namaz'))
+
+  const open = todos.filter((t) => !t.daily && t.when === 'Today' && !t.done)
+  const today = now.toDateString()
+  const doneToday = todos.filter(
+    (t) => !t.daily && t.done && t.doneAt && new Date(t.doneAt).toDateString() === today,
+  ).length
+
+  const unbought = items.filter((i) => !i.bought)
+  const nowItems = unbought.filter((i) => i.urgency === 'Now')
+  const urgent = dueSoon(payments, now)
+
+  return {
+    today: {
+      done: namaz.done + daily.done + doneToday,
+      total: namaz.rows.length + daily.rows.length + open.length + doneToday,
+    },
+    tasks: { open, overdue: open.filter((t) => isOverdue(t, now)).length },
+    namaz,
+    daily,
+    buy: {
+      now: nowItems,
+      soon: unbought.filter((i) => i.urgency === 'Soon'),
+      nowTotal: nowItems.reduce((s, i) => s + (i.price ?? 0), 0),
+    },
+    bills: {
+      upcoming: upcomingPayments(payments, now),
+      urgent: urgent.rows.length,
+      urgentTotal: urgent.total,
+    },
+    spent: monthlySpend(items).find((m) => m.key === monthKey(now.toISOString())),
+  }
+}
+
 function useStored<T>(key: string, parse: (raw: unknown) => T[]) {
   const [value, setValue] = useState<T[]>(() => {
     try {

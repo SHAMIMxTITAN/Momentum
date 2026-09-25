@@ -17,7 +17,22 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
-import { Check, ChevronRight, GripVertical, Moon, Repeat, Sun, Star, X } from 'lucide-react'
+import {
+  CalendarClock,
+  Check,
+  ChevronRight,
+  GripVertical,
+  ListChecks,
+  Moon,
+  Repeat,
+  ShoppingBag,
+  Star,
+  Sun,
+  Sunrise,
+  Wallet,
+  X,
+  type LucideIcon,
+} from 'lucide-react'
 import {
   KINDS,
   UNTAGGED,
@@ -36,6 +51,7 @@ import {
   settle,
   unsettle,
   dueSoon,
+  homeSummary,
   URGENT_DAYS,
   monthlySpend,
   isDone,
@@ -51,6 +67,7 @@ import {
   usePayments,
   useTodos,
   parseItems,
+  type HomeBand,
   type Item,
   type Kind,
   type Payment,
@@ -98,8 +115,8 @@ const money = (n: number) => `₹${inr.format(n)}`
 const FIELD =
   'rounded-lg bg-[var(--field)] px-2.5 py-1.5 text-[14px] tracking-tight outline-none'
 
-type Tab = 'Buy' | 'To-do' | 'Spending'
-const TABS: Tab[] = ['Buy', 'To-do', 'Spending']
+type Tab = 'Home' | 'Buy' | 'To-do' | 'Spending'
+const TABS: Tab[] = ['Home', 'Buy', 'To-do', 'Spending']
 
 export default function App() {
   const { items, commit, replaceAll, undo, toast, setToast } = useItems()
@@ -109,11 +126,10 @@ export default function App() {
   // than whenever the next tap or sync happens to repaint it.
   useDayTick()
   const theme = useTheme()
-  // Launch tab: a renewal about to hit the account outranks everything, because the whole
-  // point is being reminded before the money is gone. Otherwise To-do, which is the tab
-  // with something to do today. Computed once on mount so it never yanks the tab away
-  // mid-use.
-  const [tab, setTab] = useState<Tab>(() => (dueSoon(payments).rows.length ? 'Spending' : 'To-do'))
+  // Always opens on Home. It used to pick between Spending and To-do by urgency, but Home
+  // now shows both at once — a bill about to leave the account is its own box there — so
+  // guessing which single tab matters most is no longer needed.
+  const [tab, setTab] = useState<Tab>('Home')
   const sync = useGitHubSync(items, replaceAll, todos, setTodos, payments, setPayments)
 
   const pager = useRef<HTMLDivElement>(null)
@@ -202,6 +218,9 @@ export default function App() {
               className="w-full shrink-0 snap-start overflow-y-auto overscroll-y-contain"
             >
               <div className="mx-auto max-w-2xl px-3 pb-32 sm:px-6">
+                {t === 'Home' && (
+                  <HomeView items={items} todos={todos} payments={payments} goTo={goTo} />
+                )}
                 {t === 'Buy' && (
                   <BuyView items={items} commit={commit} replaceAll={replaceAll} setToast={setToast} sync={sync} />
                 )}
@@ -314,6 +333,347 @@ function ConflictBar({
       <p className="pt-2 text-[12px] text-[var(--muted)]">
         Either way the other version stays in the repo’s commit history.
       </p>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------- Home view */
+
+// Blue on black, by the owner's choice (2026-09-26): one accent and no green or teal, so
+// Home reads as a calm summary rather than a second colour-coded list. The lists keep
+// their own colour meanings — green is still "done" there.
+const BLUE = '#007AFF'
+
+/**
+ * Everything due right now, one box per list, so nothing has to be carried in your head
+ * from tab to tab. Each box is a native <details> sharing one `name`, which makes the set
+ * an exclusive accordion — opening one closes the last — with the disclosure, keyboard
+ * and a11y for free and no state to keep. An open box spans both columns so its list has
+ * room.
+ */
+function HomeView({
+  items,
+  todos,
+  payments,
+  goTo,
+}: {
+  items: Item[]
+  todos: Todo[]
+  payments: Payment[]
+  goTo: (t: Tab) => void
+}) {
+  const s = homeSummary(items, todos, payments)
+  const { done, total } = s.today
+  const now = new Date()
+  const bill = s.bills.upcoming[0]
+  const month = s.spent
+
+  return (
+    <div className="pt-1">
+      <div className="flex items-center gap-5 rounded-3xl bg-[#1D1D1F] px-5 py-5 text-white dark:bg-[#161618]">
+        <Ring done={done} total={total} />
+        <div className="min-w-0">
+          <p className="text-[13px] text-white/55">
+            {now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+          </p>
+          <p className="pt-0.5 text-[21px] font-semibold tracking-tight">
+            {total === 0
+              ? 'Nothing planned'
+              : done === total
+                ? 'All done today'
+                : `${done} of ${total} done`}
+          </p>
+          {total > done && (
+            <p className="pt-0.5 text-[13px] text-white/55">{total - done} still to do</p>
+          )}
+        </div>
+      </div>
+
+      {/* dense: an open box needs both columns, so a right-hand one drops a row; without
+          backfill that leaves a hole beside the box on its left. */}
+      <div className="grid grid-flow-row-dense grid-cols-2 gap-3 pt-3">
+        <Box
+          icon={ListChecks}
+          value={s.tasks.open.length}
+          label="Tasks today"
+          hint={
+            s.tasks.overdue
+              ? `${s.tasks.overdue} overdue`
+              : (s.tasks.open[0]?.title ?? 'All clear')
+          }
+          alert={s.tasks.overdue > 0}
+          tab="To-do"
+          goTo={goTo}
+        >
+          {s.tasks.open.length ? (
+            <List>
+              {s.tasks.open.map((t) => (
+                <Line
+                  key={t.id}
+                  title={t.title}
+                  right={isOverdue(t) ? 'Overdue' : undefined}
+                  alert
+                />
+              ))}
+            </List>
+          ) : (
+            <Empty>Nothing left for today.</Empty>
+          )}
+        </Box>
+
+        <Box
+          icon={Sunrise}
+          value={`${s.namaz.done}/${s.namaz.rows.length}`}
+          label="Namaz"
+          hint={bandHint(s.namaz, 'All prayed')}
+          tab="To-do"
+          goTo={goTo}
+        >
+          <BandList band={s.namaz} empty="No prayers set up yet." />
+        </Box>
+
+        <Box
+          icon={Repeat}
+          value={`${s.daily.done}/${s.daily.rows.length}`}
+          label="Daily"
+          hint={bandHint(s.daily, 'All done')}
+          tab="To-do"
+          goTo={goTo}
+        >
+          <BandList band={s.daily} empty="No daily habits yet." />
+        </Box>
+
+        <Box
+          icon={ShoppingBag}
+          value={s.buy.now.length}
+          label="Buy now"
+          hint={s.buy.now[0]?.title ?? 'Nothing urgent'}
+          tab="Buy"
+          goTo={goTo}
+        >
+          {s.buy.now.length || s.buy.soon.length ? (
+            <>
+              <List>
+                {s.buy.now.map((i) => (
+                  <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
+                ))}
+              </List>
+              {s.buy.nowTotal > 0 && (
+                <p className="pt-1 text-right text-[13px] text-[var(--muted)] tabular-nums">
+                  {money(s.buy.nowTotal)} for now
+                </p>
+              )}
+              {s.buy.soon.length > 0 && (
+                <>
+                  <p className="pt-3 pb-0.5 text-[12px] font-semibold tracking-wide text-[var(--muted)] uppercase">
+                    Soon
+                  </p>
+                  <List>
+                    {s.buy.soon.map((i) => (
+                      <Line key={i.id} title={i.title} right={i.price != null ? money(i.price) : undefined} />
+                    ))}
+                  </List>
+                </>
+              )}
+            </>
+          ) : (
+            <Empty>Nothing to buy right now.</Empty>
+          )}
+        </Box>
+
+        <Box
+          icon={CalendarClock}
+          value={s.bills.urgent}
+          label="Bills due"
+          hint={bill ? `${bill.payment.name} · ${dueLabel(bill.days)}` : 'No dated bills'}
+          alert={s.bills.urgent > 0}
+          tab="Spending"
+          goTo={goTo}
+        >
+          {s.bills.upcoming.length ? (
+            <List>
+              {s.bills.upcoming.slice(0, 6).map((u) => (
+                <Line
+                  key={u.payment.id}
+                  title={u.payment.name}
+                  right={`${dueLabel(u.days)} · ${money(u.payment.amount)}`}
+                  alert={u.days <= URGENT_DAYS}
+                />
+              ))}
+            </List>
+          ) : (
+            <Empty>No bills with a date yet.</Empty>
+          )}
+        </Box>
+
+        <Box
+          icon={Wallet}
+          value={money(month?.total ?? 0)}
+          label={`Spent in ${now.toLocaleDateString(undefined, { month: 'long' })}`}
+          hint={month ? `${month.count} bought` : 'Nothing yet'}
+          tab="Spending"
+          goTo={goTo}
+        >
+          {month ? (
+            <List>
+              {KINDS.map((k) => (
+                <Line key={k} title={k} right={money(month.byKind[k])} />
+              ))}
+            </List>
+          ) : (
+            <Empty>Nothing bought this month.</Empty>
+          )}
+        </Box>
+      </div>
+    </div>
+  )
+}
+
+const bandHint = (b: HomeBand, allDone: string): string =>
+  !b.rows.length ? 'None yet' : b.next ? `Next: ${b.next.title}` : allDone
+
+function Box({
+  icon: Icon,
+  value,
+  label,
+  hint,
+  alert,
+  tab,
+  goTo,
+  children,
+}: {
+  icon: LucideIcon
+  value: string | number
+  label: string
+  hint: string
+  alert?: boolean
+  tab: Tab
+  goTo: (t: Tab) => void
+  children: React.ReactNode
+}) {
+  return (
+    <details
+      name="home-tiles"
+      className="group min-w-0 rounded-3xl bg-[var(--card)] shadow-sm open:col-span-2 dark:shadow-none"
+    >
+      {/* Closed, the face stacks icon / figure / hint to fit half the width. Open, it lies
+          flat in a row and the hint gives way to the full list underneath. */}
+      <summary className="flex cursor-pointer list-none flex-col gap-3 p-4 group-open:flex-row group-open:items-center [&::-webkit-details-marker]:hidden">
+        <span
+          className="grid size-10 shrink-0 place-items-center rounded-2xl"
+          style={{ background: `${BLUE}1F`, color: BLUE }}
+        >
+          <Icon size={20} strokeWidth={2.2} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            className={`block leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums ${
+              String(value).length > 8 ? 'text-[22px]' : 'text-[26px]'
+            }`}
+          >
+            {value}
+          </span>
+          <span className="block truncate pt-1.5 text-[14px] text-[var(--muted)]">{label}</span>
+        </span>
+        <span
+          className="truncate text-[13px] group-open:hidden"
+          style={alert ? { color: BLUE, fontWeight: 600 } : { color: 'var(--faint)' }}
+        >
+          {hint}
+        </span>
+      </summary>
+      <div className="home-reveal px-4 pb-4">
+        {children}
+        <button
+          onClick={() => goTo(tab)}
+          className="mt-3 flex items-center gap-0.5 text-[14px] font-semibold"
+          style={{ color: BLUE }}
+        >
+          Open {tab}
+          <ChevronRight size={15} />
+        </button>
+      </div>
+    </details>
+  )
+}
+
+/** Plain ledger rows with the same 0.5px inset hairline the payments list uses. */
+const List = ({ children }: { children: React.ReactNode }) => (
+  <ul className="[&>li+li]:shadow-[inset_0_0.5px_0_var(--separator)]">{children}</ul>
+)
+
+function Line({ title, right, alert }: { title: string; right?: string; alert?: boolean }) {
+  return (
+    <li className="flex items-baseline justify-between gap-3 py-2 text-[15px] tracking-tight">
+      <span className="min-w-0 truncate">{title}</span>
+      {right && (
+        <span
+          className="shrink-0 text-[14px] tabular-nums"
+          style={alert ? { color: BLUE, fontWeight: 600 } : { color: 'var(--muted)' }}
+        >
+          {right}
+        </span>
+      )}
+    </li>
+  )
+}
+
+const Empty = ({ children }: { children: React.ReactNode }) => (
+  <p className="py-2 text-[15px] text-[var(--muted)]">{children}</p>
+)
+
+function BandList({ band, empty }: { band: HomeBand; empty: string }) {
+  if (!band.rows.length) return <Empty>{empty}</Empty>
+  return (
+    <List>
+      {band.rows.map((t) => {
+        const done = isDone(t)
+        return (
+          <li key={t.id} className="flex items-center gap-3 py-2 text-[15px] tracking-tight">
+            <span
+              className="grid size-5 shrink-0 place-items-center rounded-full border-2"
+              style={done ? { background: BLUE, borderColor: BLUE } : { borderColor: 'var(--faint)' }}
+            >
+              {done && <Check size={11} strokeWidth={3.5} color="#fff" />}
+            </span>
+            <span className="min-w-0 truncate" style={done ? { color: 'var(--muted)' } : undefined}>
+              {t.title}
+            </span>
+          </li>
+        )
+      })}
+    </List>
+  )
+}
+
+/**
+ * Today's progress. A zero-length stroke with a round cap still paints a dot, so an empty
+ * day draws the track alone.
+ */
+function Ring({ done, total }: { done: number; total: number }) {
+  const r = 26
+  const c = 2 * Math.PI * r
+  const p = total ? done / total : 0
+  return (
+    <div className="relative grid size-[68px] shrink-0 place-items-center">
+      <svg viewBox="0 0 64 64" className="absolute inset-0 size-full -rotate-90" aria-hidden>
+        <circle cx="32" cy="32" r={r} fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="6" />
+        {p > 0 && (
+          <circle
+            cx="32"
+            cy="32"
+            r={r}
+            fill="none"
+            stroke={BLUE}
+            strokeWidth="6"
+            strokeLinecap="round"
+            strokeDasharray={c}
+            strokeDashoffset={c * (1 - p)}
+            className="transition-[stroke-dashoffset] duration-700"
+          />
+        )}
+      </svg>
+      <span className="text-[15px] font-semibold tabular-nums">{Math.round(p * 100)}%</span>
     </div>
   )
 }

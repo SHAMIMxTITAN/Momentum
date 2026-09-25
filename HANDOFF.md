@@ -8,7 +8,7 @@ Single user, local-first, no login. This file is the context for continuing it.
 ```bash
 npm run dev          # vite, port 5173, binds to LAN
 npm run build        # -> dist/, relative paths, static deploy anywhere
-npm test             # node --test src/store.test.ts  (60 tests, all passing)
+npm test             # node --test src/store.test.ts  (67 tests, all passing)
 npx tsc --noEmit     # typecheck
 ```
 
@@ -19,7 +19,7 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
 
 ## Files
 
-- `src/App.tsx` — the whole UI. Three tabs (Buy / To-do / Spending), rows, sections, quick add,
+- `src/App.tsx` — the whole UI. Four tabs (Home / Buy / To-do / Spending), rows, sections, quick add,
   inline edit, chips, totals, sync panel.
 - `src/store.ts` — types, localStorage hook, undo stack, generic `buildRows`/`applyDrag`,
   `parseItems`/`parseTodos`, `monthlySpend`, `safeUrl`.
@@ -39,7 +39,19 @@ Vite 7 + React 19 + TypeScript + Tailwind **v4** (via `@tailwindcss/vite` — th
   it is deliberately its own column in `monthlySpend` rather than folded into either side.
   `parseItems` migrates old files: the old category name survives as the tag. Don't reintroduce
   a fixed list.
-- **Paging.** The three tabs are one native CSS scroll-snap row (`snap-x snap-mandatory`,
+- **Home** is the first tab and the one the app always opens on. It exists because the
+  owner kept forgetting things while switching tabs: one screen shows everything due now.
+  A dark Today slab with a progress ring, then six boxes — Tasks today, Namaz, Daily, Buy
+  now, Bills due, Spent this month. Every figure comes from `homeSummary()` in the store, a
+  pure read of the three lists (tested), so the view holds no logic and cannot drift. The
+  ring counts a one-off ticked today even though it has left the Today list — finishing
+  it is what the ring is for. Each box is a native `<details>` sharing `name="home-tiles"`,
+  which makes them an exclusive accordion with no React state; an open box spans both
+  columns. **Home is blue on black only** (owner, 2026-09-26): `#007AFF` plus the dark
+  slab and theme tokens — no green, no teal, and it must not borrow `KIND_COLOR` or
+  `DAILY_COLORS`, which carry both. The lists keep green as "done". It replaced the old
+  launch logic (Spending if a bill was due, else To-do); a due bill is its own box now.
+- **Paging.** The four tabs are one native CSS scroll-snap row (`snap-x snap-mandatory`,
   one full-width `snap-start` section each). The browser does the finger-tracking, the
   throw velocity and the snap, so there is no animation code and no touch maths — an
   earlier hand-rolled touchstart/touchend version was a jump cut and also hijacked swipes
